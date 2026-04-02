@@ -6,11 +6,11 @@
 | **Phase 2: Core Feature Gaps** | Message Ack, 1:1 TargetID, Presence events, Signaling routing, Call lifecycle (start/end) | ✅ Completed | 100% |
 | **Phase 3: Production Hardening** | Structured logging, Prometheus metrics, Graceful shutdown, Read/Write/Idle timeouts | ✅ Completed | 100% |
 | **Phase 4: E2EE Architecture** | X25519 Key Exchange facilitation (proper E2EE design) | ✅ Completed | 100% |
-| **Phase 5: Verification** | Build check, Unit tests for E2EE/Room/Signaling, Example updated | ✅ Completed | 100% |
-| **Phase 6: SFU & Media Optimization** | SFU architecture, Jitter buffer, Congestion control, Simulcast, NACK handling, Transceiver fixes | ✅ Completed | 100% |
-| **Phase 7: Audio/Video Transmission Fix** | pub_track handler, Transceiver direction fix, Duplicate transceiver removal, Enhanced diagnostics | ✅ Completed | 100% |
+| **Phase 5: Verification** | Build check, unit tests, benchmark and load-test coverage, examples updated | ✅ Completed | 100% |
+| **Phase 6: SFU & Media Optimization** | SFU architecture, jitter buffer, congestion control, simulcast, NACK handling, transceiver fixes | ✅ Completed | 100% |
+| **Phase 7: Audio/Video Transmission Fix** | pub_track handler, transceiver direction fix, duplicate transceiver removal, enhanced diagnostics | ✅ Completed | 100% |
 
-**Overall Project Status: 100% Done**
+**Overall Project Status: strong MVP / framework-complete base, but not 100% of the long-term roadmap**
 
 ---
 
@@ -20,32 +20,32 @@
 
 | PRD Section | Features | Evidence |
 |---|---|---|
-| **4.1 Messaging (WebSocket)** | Real-time messaging, Group chat & 1:1, Message acknowledgments, Typing indicators, Context-based connection mgmt | `ws/handler.go`, `ws/coder.go`, `ws/interface.go`, `signaling/router.go` |
+| **4.1 Messaging (WebSocket)** | Real-time messaging, Group chat & 1:1, Message acknowledgments, Typing indicators, Context-based connection management | `ws/handler.go`, `ws/coder.go`, `ws/interface.go`, `signaling/router.go`, `app.go` |
 | **4.2 WebRTC (Media)** | Audio calls (1:1), Video calls (1:1), Group calls (SFU), Media stream control | `rtc/manager.go`, `rtc/router.go`, `rtc/negotiator.go` |
 | **4.3 Signaling System** | Offer/Answer exchange, ICE candidate handling, Session negotiation via WebSocket | `signaling/hub.go`, `signaling/router.go`, `app.go:311-365` |
-| **4.4 Room & Session Mgmt** | Create/join/leave rooms, Group session handling, Peer tracking, Presence (online/offline) | `room/manager.go`, `signaling/hub.go:119-158` |
+| **4.4 Room & Session Mgmt** | Create/join/leave rooms, Group session handling, Peer tracking, Presence (online/offline), multi-session room support | `room/manager.go`, `signaling/hub.go`, `app.go` |
 | **4.5 E2EE** | Secure encryption (XChaCha20-Poly1305), X25519 Key exchange system | `e2ee/crypto.go`, `e2ee/x3dh.go` |
 | **4.6 Developer API** | Plug-and-play `mana.New()` API, Event hooks, Component accessors | `app.go:66-176`, `examples/full/main.go` |
 | **4.7 Event System** | OnUserJoin, OnUserLeave, OnMessage, OnCallStart, OnCallEnd | `app.go:158-163` |
-| **4.9 WebSocket Abstraction** | `Conn` interface, Coder adapter (nhooyr/coder), Pluggable backend design | `ws/interface.go`, `ws/coder.go` |
+| **4.9 WebSocket Abstraction** | `Conn` interface, coder backend, pluggable backend design, in-memory backend for tests/embedded use | `ws/interface.go`, `ws/coder.go`, `ws/backend.go`, `ws/inmemory.go` |
 | **14. Auth & AuthZ** | JWT auth, RBAC (admin/user/guest), Session security | `auth/auth.go` |
 | **14. Observability** | Logging (structured, level-filtered), Prometheus metrics | `observ/observ.go`, `app.go:185-197` |
-| **14. Reliability** | Graceful shutdown, Rate limiting, Config validation | `app.go:216-253`, `auth/ratelimit.go`, `core/config.go:110-133` |
+| **14. Reliability** | Graceful shutdown, rate limiting, config validation, reconnect sync foundation | `app.go`, `auth/ratelimit.go`, `core/config.go`, `storage/message_store.go` |
 | **14. Security** | TLS support, AllowedOrigins, MaxMessageSize, JWT enforcement | `core/config.go`, `ws/handler.go:39-51` |
-| **14. WebRTC Handling** | ICE candidate queuing, ICE timeouts, SRTP replay protection | `rtc/manager.go:165-197`, `rtc/manager.go:364-367` |
+| **14. WebRTC Handling** | ICE candidate queuing, ICE timeouts, SRTP replay protection, ICE restart support | `rtc/manager.go`, `app.go`, `core/types.go` |
 | **SFU (Phase 4 MVP)** | Jitter buffer, Congestion control, Simulcast, NACK handling, Packet fan-out | `rtc/jitter.go`, `rtc/congestion.go`, `rtc/simulcast.go`, `rtc/router.go` |
 
 ### ⚠️ PARTIALLY IMPLEMENTED
 
 | PRD Section | What's Missing | Notes |
 |---|---|---|
-| **4.1 Messaging** | Reconnection handling | Client-side responsibility; server handles disconnects cleanly |
-| **4.2 WebRTC** | Screen sharing | Referenced in `examples/full/main.go` comment but no `screen` track type handling in code |
+| **4.1 Messaging** | Product-complete reconnection handling | Server-side reconnect sync and device-aware replay now exist, but richer client reconciliation is still partial |
+| **4.2 WebRTC** | Full product-grade screen sharing/media UX | Screen-share signaling exists, but full browser-grade product handling is still partial |
 | **4.5 E2EE** | Double ratchet protocol | Marked as "Future" in PRD; X25519 + XChaCha20-Poly1305 implemented |
 | **14. Scalability** | Stateless nodes, Redis/NATS pub-sub, Load balancing | Single-node architecture; no distributed state |
 | **14. Observability** | OpenTelemetry tracing | Only Prometheus metrics + structured logging |
-| **14. WebRTC** | TURN fallback, Network switch handling | STUN configured; no TURN relay or ICE restart logic |
-| **Testing** | Integration + load tests | Unit tests exist (`hub_test.go`, `manager_test.go`, `e2ee/*_test.go`); no integration/load tests |
+| **14. WebRTC** | TURN fallback, network switch handling | STUN configured; ICE restart exists, but TURN-first and network-switch hardening are still missing |
+| **Testing** | Full integration and long-soak coverage | Unit tests, benchmarks, and load-profile tests exist, but a broader integration/soak suite is still missing |
 | **4.9 WebSocket** | gobwas adapter | Only Coder (nhooyr successor) adapter; interface supports pluggable backends |
 
 ### ❌ NOT IMPLEMENTED
@@ -68,6 +68,12 @@
 | ❌ Not Implemented | 4 features | (all marked "Optional Future" or deployment/CLI) |
 
 **Core PRD Coverage: ~85%** (excluding optional/future items and deployment infrastructure)
+
+Important note:
+
+- this reflects PRD coverage, not “the entire framework is finished”
+- the current codebase is strong for MVPs and controlled production use
+- the roadmap phases below are still real remaining work
 
 ---
 
@@ -92,7 +98,7 @@ The items below are the next major milestones needed to move Mana toward a Whats
 |---|---|---|---|
 | **Phase 8: Durable Messaging & Offline Sync** | ⚠️ Partially Implemented | 60% | File-backed message store, delivery tracking, reconnect sync batch, offline replay on reconnect |
 | **Phase 9: Multi-Device Architecture** | ⚠️ Partially Implemented | 55% | Session IDs with device suffixes, per-user multi-session tracking, direct fanout to all user sessions, room multi-session support |
-| **Phase 13: RTC Hardening** | ⚠️ Partially Implemented | 45% | ICE restart signal, server-side ICE restart offer generation, better session-aware RTC identity handling |
+| **Phase 13: RTC Hardening** | ⚠️ Partially Implemented | 50% | ICE restart signal, server-side ICE restart offer generation, session-aware RTC identity handling, call lifecycle routing improvements |
 
 Implemented evidence:
 
@@ -100,6 +106,7 @@ Implemented evidence:
 - Offline sync: `app.go`, `app_sync_test.go`
 - Multi-device sessions: `app.go`, `room/manager.go`, `signaling/hub.go`, `ws/handler.go`
 - RTC hardening slice: `rtc/manager.go`, `core/types.go`, `app.go`
+- Load and transport validation: `load_profile_test.go`, `websocket_e2e_benchmark_test.go`
 
 Still missing before these phases can be called 100% complete:
 
