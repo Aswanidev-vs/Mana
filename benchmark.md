@@ -57,25 +57,6 @@ So the discrete `NVIDIA GTX 1650` was not part of the measured execution path. T
 - Go cache override used for reproducibility in this workspace:
   - `GOCACHE=g:\Mana\.gocache`
 
-## Commands
-
-Validation:
-
-```powershell
-$env:GOCACHE='g:\Mana\.gocache'; go test ./...
-```
-
-Benchmarks:
-
-```powershell
-$env:GOCACHE='g:\Mana\.gocache'; go test -run ^$ -bench . -benchmem ./...
-```
-
-Production-style WebSocket load profile:
-
-```powershell
-$env:GOCACHE='g:\Mana\.gocache'; go test -run TestWebSocketProdProfile -v .
-```
 
 ## Results
 
