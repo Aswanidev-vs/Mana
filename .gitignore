@@ -1,0 +1,14 @@
+Remainwith/
+remainwith/
+app_benchmark_test.go
+app_sync_test.go
+load_profile_test.go
+websocket_e2e_benchmark_test.go
+room/manager_benchmark_test.go
+rtc/manager_benchmark_test.go
+rtc/router_benchmark_test.go
+signaling/hub_benchmark_test.go
+storage/message_store_test.go
+signaling/router_test.go
+ws/inmemory_test.go
+.vscode/

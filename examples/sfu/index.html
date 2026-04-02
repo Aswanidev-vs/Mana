@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mana SFU Client</title>
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+        video { width: 100%; border-radius: 8px; background: #1e293b; aspect-ratio: 16/9; }
+        .controls { margin-bottom: 2rem; display: flex; gap: 0.5rem; }
+        input { padding: 0.5rem; border-radius: 4px; border: none; background: #1e293b; color: white; }
+        button { padding: 0.5rem 1rem; border-radius: 4px; background: #3b82f6; color: white; border: none; cursor: pointer; transition: 0.2s; }
+        button:hover { background: #2563eb; }
+        .status { margin-top: 1rem; font-size: 0.875rem; color: #94a3b8; }
+    </style>
+</head>
+<body>
+    <h1>Mana SFU Demo</h1>
+    <div class="controls">
+        <input id="roomID" placeholder="Room ID" value="test-room">
+        <input id="userID" placeholder="User ID" value="user-123">
+        <button id="joinBtn">Join Room</button>
+    </div>
+
+    <div class="grid" id="videoGrid">
+        <div>
+            <h3>Local Stream</h3>
+            <video id="localVideo" autoplay muted playsinline></video>
+        </div>
+    </div>
+
+    <div class="status" id="statusLog">Ready to connect...</div>
+
+    <script>
+        const roomInput = document.getElementById('roomID');
+        const userInput = document.getElementById('userID');
+        const joinBtn = document.getElementById('joinBtn');
+        const videoGrid = document.getElementById('videoGrid');
+        const statusLog = document.getElementById('statusLog');
+
+        let ws;
+        let pc;
+        let localStream;
+
+        const log = (msg) => { statusLog.innerText = msg; console.log(msg); };
+
+        joinBtn.onclick = async () => {
+            const roomID = roomInput.value;
+            const userID = userInput.value;
+
+            // 1. Get Local Media
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            document.getElementById('localVideo').srcObject = localStream;
+
+            // 2. Connect WebSocket
+            ws = new WebSocket(`ws://localhost:8080/ws?room=${roomID}&user=${userID}`);
+            
+            ws.onopen = () => {
+                log("WebSocket Connected. Joining...");
+                setupWebRTC(roomID, userID);
+            };
+
+            ws.onmessage = async (e) => {
+                const signal = JSON.parse(e.data);
+                handleSignal(signal);
+            };
+        };
+
+        async function setupWebRTC(roomID, userID) {
+            pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+
+            // 3. Add tracks to PeerConnection
+            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+            // 4. Handle ICE Candidates
+            pc.onicecandidate = (e) => {
+                if (e.candidate) {
+                    ws.send(JSON.stringify({
+                        type: 'candidate',
+                        from: userID,
+                        roomID: roomID,
+                        candidate: JSON.stringify(e.candidate)
+                    }));
+                }
+            };
+
+            // 5. Perfect Negotiation: Create Offer
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            ws.send(JSON.stringify({
+                type: 'offer',
+                from: userID,
+                roomID: roomID,
+                sdp: offer.sdp
+            }));
+            
+            log("Offer sent to SFU...");
+        }
+
+        async function handleSignal(signal) {
+            switch (signal.type) {
+                case 'answer':
+                    log("Received SFU Answer");
+                    await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: signal.sdp }));
+                    break;
+
+                case 'candidate':
+                    const candidate = JSON.parse(signal.candidate);
+                    await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                    break;
+
+                case 'track_added':
+                    log(`New track available from ${signal.from}: ${signal.payload}`);
+                    // 6. Automatic Subscription Logic
+                    ws.send(JSON.stringify({
+                        type: 'subscribe',
+                        from: userInput.value,
+                        roomID: signal.roomID,
+                        payload: btoa(signal.payload) // Base64 encoded trackID
+                    }));
+                    break;
+
+                case 'track':
+                    // SFU will send an offer for the new track (Standard Renegotiation)
+                    // For simplicity in this demo, let's assume the SFU handles the Sub flow.
+                    break;
+            }
+        }
+
+        // Handle incoming tracks from SFU (Subscriptions)
+        pc.ontrack = (event) => {
+            log("Received remote track from SFU");
+            const remoteVideo = document.createElement('video');
+            remoteVideo.autoplay = true;
+            remoteVideo.playsinline = true;
+            remoteVideo.srcObject = event.streams[0];
+            
+            const div = document.createElement('div');
+            div.innerHTML = `<h3>Remote Peer</h3>`;
+            div.appendChild(remoteVideo);
+            videoGrid.appendChild(div);
+        };
+    </script>
+</body>
+</html>
