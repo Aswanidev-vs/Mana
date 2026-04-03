@@ -43,6 +43,13 @@ type Config struct {
 	// STUNServers is the list of STUN/TURN server URLs for WebRTC.
 	STUNServers []string `json:"stun_servers"`
 
+	// TURNServers contains authenticated TURN relay definitions.
+	TURNServers []ICEServerConfig `json:"turn_servers"`
+
+	// ICETransportPolicy controls how ICE candidates are selected.
+	// Supported values are "all" and "relay".
+	ICETransportPolicy string `json:"ice_transport_policy"`
+
 	// GracefulShutdownTimeout is the max time to wait for connections to drain.
 	GracefulShutdownTimeout time.Duration `json:"graceful_shutdown_timeout"`
 
@@ -78,6 +85,45 @@ type Config struct {
 
 	// MessageStorePath enables durable file-backed message persistence when set.
 	MessageStorePath string `json:"message_store_path"`
+
+	// ProductStorePath enables durable product-state persistence when set.
+	ProductStorePath string `json:"product_store_path"`
+
+	// AttachmentDir is the base directory for product attachment metadata/assets.
+	AttachmentDir string `json:"attachment_dir"`
+
+	// ReplayBatchSize caps reconnect replay batches returned to clients.
+	ReplayBatchSize int `json:"replay_batch_size"`
+
+	// ClusterNodeID identifies this process when pub-sub fanout is enabled.
+	ClusterNodeID string `json:"cluster_node_id"`
+
+	// PubSubBackend selects the cluster fanout backend: "", "memory", "redis", or "nats".
+	PubSubBackend string `json:"pubsub_backend"`
+
+	// Redis cluster transport settings.
+	RedisAddr     string `json:"redis_addr"`
+	RedisPassword string `json:"-"`
+	RedisDB       int    `json:"redis_db"`
+	RedisChannel  string `json:"redis_channel"`
+
+	// NATS cluster transport settings.
+	NATSURL     string `json:"nats_url"`
+	NATSSubject string `json:"nats_subject"`
+
+	// Tracing controls built-in OpenTelemetry instrumentation.
+	EnableTracing    bool    `json:"enable_tracing"`
+	TraceSampleRatio float64 `json:"trace_sample_ratio"`
+	ServiceName      string  `json:"service_name"`
+	ServiceVersion   string  `json:"service_version"`
+}
+
+// ICEServerConfig describes an authenticated ICE server, typically TURN.
+type ICEServerConfig struct {
+	URLs           []string `json:"urls"`
+	Username       string   `json:"username,omitempty"`
+	Credential     string   `json:"credential,omitempty"`
+	CredentialType string   `json:"credential_type,omitempty"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -98,6 +144,7 @@ func DefaultConfig() Config {
 			"stun:stun.l.google.com:19302",
 			"stun:stun1.l.google.com:19302",
 		},
+		ICETransportPolicy:      "all",
 		GracefulShutdownTimeout: 15 * time.Second,
 		AllowedOrigins:          []string{},
 		RateLimitPerSecond:      100,
@@ -106,6 +153,13 @@ func DefaultConfig() Config {
 		ReadTimeout:             15 * time.Second,
 		WriteTimeout:            15 * time.Second,
 		IdleTimeout:             60 * time.Second,
+		ReplayBatchSize:         200,
+		RedisChannel:            "mana.cluster",
+		NATSURL:                 "nats://127.0.0.1:4222",
+		NATSSubject:             "mana.cluster",
+		TraceSampleRatio:        1,
+		ServiceName:             "mana",
+		ServiceVersion:          "dev",
 	}
 }
 
@@ -131,6 +185,24 @@ func (c *Config) Validate() []string {
 	}
 	if c.RateLimitPerSecond <= 0 {
 		warnings = append(warnings, "WARNING: Rate limiting disabled — vulnerable to flood attacks")
+	}
+
+	if c.ReplayBatchSize <= 0 {
+		c.ReplayBatchSize = 200
+	}
+	if c.ICETransportPolicy != "" && c.ICETransportPolicy != "all" && c.ICETransportPolicy != "relay" {
+		warnings = append(warnings, "WARNING: unsupported ICETransportPolicy - defaulting to all")
+		c.ICETransportPolicy = "all"
+	}
+	if c.TraceSampleRatio < 0 || c.TraceSampleRatio > 1 {
+		warnings = append(warnings, "WARNING: TraceSampleRatio must be between 0 and 1 - defaulting to 1")
+		c.TraceSampleRatio = 1
+	}
+	if c.PubSubBackend == "redis" && c.RedisAddr == "" {
+		warnings = append(warnings, "WARNING: PubSubBackend=redis without RedisAddr - cluster fanout disabled until configured")
+	}
+	if c.PubSubBackend == "nats" && c.NATSURL == "" {
+		warnings = append(warnings, "WARNING: PubSubBackend=nats without NATSURL - cluster fanout disabled until configured")
 	}
 
 	return warnings

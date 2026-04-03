@@ -57,49 +57,7 @@ func NewRouter(cfg RouterConfig) *Router {
 func (r *Router) HandleIncoming(ctx context.Context, peer *Peer, userRole string, data []byte) {
 	var signal core.Signal
 	if err := json.Unmarshal(data, &signal); err == nil && signal.Type != "" {
-		if signal.From == "" {
-			signal.From = peer.UserID
-			switch signal.Type {
-			case core.SignalOffer, core.SignalAnswer, core.SignalCandidate, core.SignalKeyExchange, core.SignalICERestart:
-				signal.From = peer.ID
-			}
-		}
-
-		handled := true
-		switch signal.Type {
-		case core.SignalJoin:
-			r.handleJoin(ctx, peer, userRole, signal)
-		case core.SignalLeave:
-			r.handleLeave(ctx, peer, signal)
-		case core.SignalMessage:
-			r.handleMessage(ctx, peer, userRole, signal)
-		case core.SignalTyping:
-			r.handleTyping(ctx, peer, signal)
-		case core.SignalMute:
-			r.handleParticipantState(ctx, peer, signal, "is_muted")
-		case core.SignalCameraToggle:
-			r.handleParticipantState(ctx, peer, signal, "camera_on")
-		case core.SignalScreenStart:
-			r.handleParticipantState(ctx, peer, signal, "screen_on")
-		case core.SignalScreenStop:
-			r.handleParticipantState(ctx, peer, signal, "screen_on")
-		case core.SignalPin:
-			r.handlePin(ctx, peer, signal)
-		case core.SignalCallStart:
-			r.handleCallStart(ctx, peer, userRole, signal)
-		case core.SignalCallEnd:
-			r.handleCallEnd(ctx, peer, userRole, signal)
-		default:
-			handled = false
-		}
-
-		if handled {
-			r.config.Hub.Dispatch(signal)
-			return
-		}
-
-		// Unhandled signals use hub forwarding plus registered handlers.
-		_ = r.config.Hub.HandleMessage(ctx, data)
+		r.HandleSignal(ctx, peer, userRole, signal)
 		return
 	}
 
@@ -112,6 +70,52 @@ func (r *Router) HandleIncoming(ctx context.Context, peer *Peer, userRole string
 			r.config.OnMessage(msg)
 		}
 	}
+}
+
+// HandleSignal routes an already-decoded signal to the appropriate handler.
+func (r *Router) HandleSignal(ctx context.Context, peer *Peer, userRole string, signal core.Signal) {
+	if signal.From == "" {
+		signal.From = peer.UserID
+		switch signal.Type {
+		case core.SignalOffer, core.SignalAnswer, core.SignalCandidate, core.SignalKeyExchange, core.SignalICERestart:
+			signal.From = peer.ID
+		}
+	}
+
+	handled := true
+	switch signal.Type {
+	case core.SignalJoin:
+		r.handleJoin(ctx, peer, userRole, signal)
+	case core.SignalLeave:
+		r.handleLeave(ctx, peer, signal)
+	case core.SignalMessage:
+		r.handleMessage(ctx, peer, userRole, signal)
+	case core.SignalTyping:
+		r.handleTyping(ctx, peer, signal)
+	case core.SignalMute:
+		r.handleParticipantState(ctx, peer, signal, "is_muted", false)
+	case core.SignalCameraToggle:
+		r.handleParticipantState(ctx, peer, signal, "camera_on", true)
+	case core.SignalScreenStart:
+		r.handleParticipantState(ctx, peer, signal, "screen_on", true)
+	case core.SignalScreenStop:
+		r.handleParticipantState(ctx, peer, signal, "screen_on", false)
+	case core.SignalPin:
+		r.handlePin(ctx, peer, signal)
+	case core.SignalCallStart:
+		r.handleCallStart(ctx, peer, userRole, signal)
+	case core.SignalCallEnd:
+		r.handleCallEnd(ctx, peer, userRole, signal)
+	default:
+		handled = false
+	}
+
+	if handled {
+		r.config.Hub.Dispatch(signal)
+		return
+	}
+
+	r.config.Hub.HandleSignal(ctx, signal)
 }
 
 func (r *Router) handleJoin(ctx context.Context, peer *Peer, userRole string, signal core.Signal) {
@@ -143,6 +147,7 @@ func (r *Router) handleMessage(ctx context.Context, peer *Peer, userRole string,
 			Payload:  signal.Payload,
 			RoomID:   signal.RoomID,
 			TargetID: signal.To,
+			AckID:    signal.AckID,
 		})
 	}
 
@@ -153,11 +158,11 @@ func (r *Router) handleMessage(ctx context.Context, peer *Peer, userRole string,
 	}
 }
 
-func (r *Router) handleParticipantState(ctx context.Context, peer *Peer, signal core.Signal, field string) {
+func (r *Router) handleParticipantState(ctx context.Context, peer *Peer, signal core.Signal, field string, defaultValue bool) {
 	if signal.RoomID == "" {
 		return
 	}
-	stateVal := signal.Type == core.SignalScreenStart
+	stateVal := defaultValue
 	if len(signal.Payload) > 0 {
 		json.Unmarshal(signal.Payload, &stateVal)
 	}

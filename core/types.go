@@ -5,6 +5,7 @@ import "time"
 // Message represents a communication message between peers.
 type Message struct {
 	ID        string    `json:"id"`
+	Sequence  uint64    `json:"sequence,omitempty"`
 	Type      string    `json:"type"`
 	RoomID    string    `json:"room_id,omitempty"`
 	SenderID  string    `json:"sender_id"`
@@ -17,9 +18,21 @@ type Message struct {
 // DeviceSyncBatch delivers historical messages to a reconnecting device.
 type DeviceSyncBatch struct {
 	Type      string    `json:"type"` // "message_sync"
+	SessionID string    `json:"session_id,omitempty"`
 	DeviceID  string    `json:"device_id,omitempty"`
+	Cursor    uint64    `json:"cursor,omitempty"`
+	HasMore   bool      `json:"has_more,omitempty"`
+	Reason    string    `json:"reason,omitempty"`
 	Messages  []Message `json:"messages"`
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// SyncRequest allows a reconnecting client to explicitly reconcile from a known cursor.
+type SyncRequest struct {
+	Type     string `json:"type"` // "sync_request"
+	DeviceID string `json:"device_id,omitempty"`
+	Cursor   uint64 `json:"cursor,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
 }
 
 // User represents a connected user.
@@ -58,7 +71,9 @@ const (
 	SignalCallStart     SignalType = "call_start"
 	SignalCallEnd       SignalType = "call_end"
 	SignalSync          SignalType = "message_sync"
+	SignalSyncRequest   SignalType = "sync_request"
 	SignalICERestart    SignalType = "ice_restart"
+	SignalNetworkChange SignalType = "network_change"
 	SignalActiveSpeaker SignalType = "active_speaker"
 	SignalTrackAdded    SignalType = "track_added"
 	SignalError         SignalType = "error"

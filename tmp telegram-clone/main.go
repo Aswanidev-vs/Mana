@@ -197,8 +197,23 @@ func listOnlineUsers(app *mana.App) []string {
 
 func attachUserToRoom(app *mana.App, roomID, username string) {
 	for _, sessionID := range activeSessionIDsForUser(app, username) {
+		peer, ok := app.SignalHub().Peer(sessionID)
+		if !ok {
+			continue
+		}
+		err := app.RoomManager().JoinSession(roomID, sessionID, core.User{ID: username, Username: username, Online: true}, peer.Conn)
+		if err != nil && !strings.Contains(err.Error(), "already in room") {
+			logger.Warn("join session %s to room %s: %v", sessionID, roomID, err)
+		}
 		app.SignalHub().AddPeerToRoom(roomID, sessionID)
 	}
+}
+
+func ensureRoom(app *mana.App, roomID, name string) {
+	if _, err := app.RoomManager().Get(roomID); err == nil {
+		return
+	}
+	app.RoomManager().Create(roomID, name)
 }
 
 func notifyUserPresence(app *mana.App, fromUser, toUser string, online bool) {
@@ -306,7 +321,7 @@ func main() {
 			parts := strings.Split(key, ":")
 			if len(parts) == 2 && (parts[0] == username || parts[1] == username) {
 				apiLog.Debug("Auto-joining DM room: %s", dm.RoomID)
-				app.RoomManager().Create(dm.RoomID, "dm:"+key)
+				ensureRoom(app, dm.RoomID, "dm:"+key)
 				attachUserToRoom(app, dm.RoomID, username)
 
 				// Mark undelivered messages as delivered
@@ -327,7 +342,7 @@ func main() {
 			for _, m := range g.Members {
 				if m == username {
 					apiLog.Debug("Auto-joining group room: %s", gid)
-					app.RoomManager().Create(gid, g.Name)
+					ensureRoom(app, gid, g.Name)
 					attachUserToRoom(app, gid, username)
 
 					messagesMu.RLock()
@@ -440,6 +455,7 @@ func main() {
 			Title: "Message Status",
 			Data: map[string]interface{}{
 				"msg_id": msgID,
+				"ack_id": msg.AckID,
 				"status": status,
 			},
 		})
@@ -719,7 +735,7 @@ func main() {
 		dmRoomsMu.Unlock()
 
 		// Create the room in the framework
-		app.RoomManager().Create(roomID, "dm:"+key)
+		ensureRoom(app, roomID, "dm:"+key)
 
 		// Also add them to the room so they receive messages
 		attachUserToRoom(app, roomID, req.User)
@@ -840,7 +856,7 @@ func main() {
 			groups[groupID] = g
 			groupsMu.Unlock()
 
-			app.RoomManager().Create(groupID, req.Name)
+			ensureRoom(app, groupID, req.Name)
 			for _, member := range members {
 				attachUserToRoom(app, groupID, member)
 			}

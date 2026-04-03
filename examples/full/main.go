@@ -19,6 +19,7 @@ import (
 	"github.com/Aswanidev-vs/mana/auth"
 	"github.com/Aswanidev-vs/mana/core"
 	"github.com/Aswanidev-vs/mana/e2ee"
+	"github.com/Aswanidev-vs/mana/product"
 )
 
 func main() {
@@ -37,6 +38,9 @@ func main() {
 	cfg.AllowedOrigins = []string{"*"}
 	cfg.RateLimitPerSecond = 100
 	cfg.RateLimitBurst = 200
+	cfg.MessageStorePath = "data/messages.json"
+	cfg.ProductStorePath = "data/product.json"
+	cfg.AttachmentDir = "data/attachments"
 	cfg.STUNServers = []string{
 		"stun:stun.l.google.com:19302",
 		"stun:stun1.l.google.com:19302",
@@ -70,6 +74,14 @@ func main() {
 		"alice": {"alice", "password123", auth.RoleUser},
 		"bob":   {"bob", "password123", auth.RoleUser},
 		"admin": {"admin", "adminpass", auth.RoleAdmin},
+	}
+	productStore := app.ProductStore()
+	for username, user := range users {
+		_ = productStore.UpsertProfile(product.Profile{
+			UserID:      username,
+			DisplayName: user.Username,
+			Status:      "Available",
+		})
 	}
 
 	mux.HandleFunc("/api/register", func(w http.ResponseWriter, r *http.Request) {
@@ -137,6 +149,371 @@ func main() {
 	mux.HandleFunc("/api/rooms", func(w http.ResponseWriter, r *http.Request) {
 		rooms := app.RoomManager().List()
 		json.NewEncoder(w).Encode(rooms)
+	})
+
+	requireAuth := func(w http.ResponseWriter, r *http.Request) (string, auth.Role, bool) {
+		tokenStr := auth.ExtractToken(r)
+		if tokenStr == "" {
+			tokenStr = auth.ExtractTokenFromQuery(r)
+		}
+		if tokenStr == "" {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return "", "", false
+		}
+		claims, err := jwtAuth.ValidateToken(tokenStr)
+		if err != nil {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return "", "", false
+		}
+		return claims.UserID, claims.Role, true
+	}
+
+	mux.HandleFunc("/api/profile", func(w http.ResponseWriter, r *http.Request) {
+		userID, _, ok := requireAuth(w, r)
+		if !ok {
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			profile, _ := productStore.Profile(userID)
+			json.NewEncoder(w).Encode(profile)
+		case http.MethodPost:
+			var req product.Profile
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "bad json", http.StatusBadRequest)
+				return
+			}
+			req.UserID = userID
+			if req.DisplayName == "" {
+				req.DisplayName = userID
+			}
+			if err := productStore.UpsertProfile(req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			json.NewEncoder(w).Encode(req)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/preferences", func(w http.ResponseWriter, r *http.Request) {
+		userID, _, ok := requireAuth(w, r)
+		if !ok {
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode(productStore.NotificationPreferences(userID))
+		case http.MethodPost:
+			var prefs product.NotificationPreferences
+			if err := json.NewDecoder(r.Body).Decode(&prefs); err != nil {
+				http.Error(w, "bad json", http.StatusBadRequest)
+				return
+			}
+			if err := productStore.SetNotificationPreferences(userID, prefs); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			json.NewEncoder(w).Encode(prefs)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/contacts", func(w http.ResponseWriter, r *http.Request) {
+		userID, _, ok := requireAuth(w, r)
+		if !ok {
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode(map[string]any{"contacts": productStore.Contacts(userID)})
+		case http.MethodPost:
+			var req struct {
+				ContactID string `json:"contact_id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ContactID == "" {
+				http.Error(w, "contact_id required", http.StatusBadRequest)
+				return
+			}
+			if err := productStore.AddContact(userID, req.ContactID); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"contacts": productStore.Contacts(userID)})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/block", func(w http.ResponseWriter, r *http.Request) {
+		userID, _, ok := requireAuth(w, r)
+		if !ok {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			TargetID string `json:"target_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TargetID == "" {
+			http.Error(w, "target_id required", http.StatusBadRequest)
+			return
+		}
+		if err := productStore.BlockUser(userID, req.TargetID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/api/report", func(w http.ResponseWriter, r *http.Request) {
+		userID, _, ok := requireAuth(w, r)
+		if !ok {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req product.Report
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		req.ReporterID = userID
+		if err := productStore.Report(req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(req)
+	})
+
+	mux.HandleFunc("/api/devices", func(w http.ResponseWriter, r *http.Request) {
+		userID, _, ok := requireAuth(w, r)
+		if !ok {
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode(map[string]any{"devices": productStore.Devices(userID)})
+		case http.MethodPost:
+			var req product.Device
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceID == "" {
+				http.Error(w, "device_id required", http.StatusBadRequest)
+				return
+			}
+			if err := productStore.RegisterDevice(userID, req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"devices": productStore.Devices(userID)})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/conversations", func(w http.ResponseWriter, r *http.Request) {
+		userID, _, ok := requireAuth(w, r)
+		if !ok {
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode(productStore.ConversationsForUser(userID))
+		case http.MethodPost:
+			var req product.Conversation
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+				http.Error(w, "conversation id required", http.StatusBadRequest)
+				return
+			}
+			req.Participants = append(req.Participants, userID)
+			if err := productStore.UpsertConversation(req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			json.NewEncoder(w).Encode(req)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/conversations/draft", func(w http.ResponseWriter, r *http.Request) {
+		userID, _, ok := requireAuth(w, r)
+		if !ok {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			ConversationID string `json:"conversation_id"`
+			Text           string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ConversationID == "" {
+			http.Error(w, "conversation_id required", http.StatusBadRequest)
+			return
+		}
+		if err := productStore.SetDraft(req.ConversationID, userID, req.Text); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/api/conversations/read", func(w http.ResponseWriter, r *http.Request) {
+		userID, _, ok := requireAuth(w, r)
+		if !ok {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			ConversationID string `json:"conversation_id"`
+			UpToSequence   uint64 `json:"up_to_sequence"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ConversationID == "" {
+			http.Error(w, "conversation_id required", http.StatusBadRequest)
+			return
+		}
+		if err := productStore.MarkRead(req.ConversationID, userID, req.UpToSequence); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/api/messages/edit", func(w http.ResponseWriter, r *http.Request) {
+		if _, _, ok := requireAuth(w, r); !ok {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			MessageID string `json:"message_id"`
+			Text      string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.MessageID == "" {
+			http.Error(w, "message_id required", http.StatusBadRequest)
+			return
+		}
+		if err := productStore.EditMessage(req.MessageID, []byte(req.Text)); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/api/messages/delete", func(w http.ResponseWriter, r *http.Request) {
+		userID, _, ok := requireAuth(w, r)
+		if !ok {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			MessageID string `json:"message_id"`
+			Revoke    bool   `json:"revoke"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.MessageID == "" {
+			http.Error(w, "message_id required", http.StatusBadRequest)
+			return
+		}
+		if err := productStore.DeleteMessage(req.MessageID, userID, req.Revoke); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/api/attachments", func(w http.ResponseWriter, r *http.Request) {
+		if _, _, ok := requireAuth(w, r); !ok {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req product.Attachment
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+			http.Error(w, "attachment metadata required", http.StatusBadRequest)
+			return
+		}
+		if err := productStore.AddAttachment(req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(req)
+	})
+
+	mux.HandleFunc("/api/admin/stats", func(w http.ResponseWriter, r *http.Request) {
+		_, role, ok := requireAuth(w, r)
+		if !ok {
+			return
+		}
+		if role != auth.RoleAdmin {
+			http.Error(w, "admin required", http.StatusForbidden)
+			return
+		}
+		json.NewEncoder(w).Encode(productStore.AdminStats())
+	})
+
+	mux.HandleFunc("/api/admin/reports", func(w http.ResponseWriter, r *http.Request) {
+		_, role, ok := requireAuth(w, r)
+		if !ok {
+			return
+		}
+		if role != auth.RoleAdmin {
+			http.Error(w, "admin required", http.StatusForbidden)
+			return
+		}
+		json.NewEncoder(w).Encode(productStore.Reports())
+	})
+
+	mux.HandleFunc("/api/admin/backup", func(w http.ResponseWriter, r *http.Request) {
+		_, role, ok := requireAuth(w, r)
+		if !ok {
+			return
+		}
+		if role != auth.RoleAdmin {
+			http.Error(w, "admin required", http.StatusForbidden)
+			return
+		}
+		if r.Method == http.MethodGet {
+			snapshot, err := productStore.Backup()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(snapshot)
+			return
+		}
+		if r.Method == http.MethodPost {
+			var snapshot product.Snapshot
+			if err := json.NewDecoder(r.Body).Decode(&snapshot); err != nil {
+				http.Error(w, "bad json", http.StatusBadRequest)
+				return
+			}
+			if err := productStore.Restore(snapshot); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	})
 
 	// --- E2EE public-key endpoints ---

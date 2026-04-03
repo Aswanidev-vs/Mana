@@ -33,9 +33,12 @@ Start here depending on what you need:
 - Rate limiting and origin controls
 - TLS support and configurable server timeouts
 - Metrics, health endpoints, and graceful shutdown
+- OpenTelemetry tracing with in-memory inspection endpoint
 - E2EE primitives and X3DH-style key exchange helpers
 - Multi-session and device-aware connection tracking
-- Durable message store and reconnect sync foundation
+- Durable message store and cursor-based reconnect sync
+- Stateless multi-node signal fanout via memory, Redis, or NATS backends
+- TURN-aware WebRTC config with ICE relay policy and network recovery hooks
 
 ## Project Layout
 
@@ -149,14 +152,12 @@ Mana can be used securely for many normal MVP scenarios, but it should not be ma
 
 ## Known Limitations
 
-- No distributed pub-sub layer yet for multi-node room/message coordination
-- No Redis/NATS integration yet
-- No OpenTelemetry tracing yet
 - No official CLI like `mana init` or `mana run`
 - WebSocket backend abstraction exists, but only one main production backend is wired today
 - Durable messaging and offline sync are partial, not fully product-complete
 - Multi-device support is partial and still evolving
-- RTC hardening is incomplete for TURN-first, network-switch-heavy production environments
+- Broker-backed clustering and tracing still need production deployment templates and operational validation
+- RTC hardening still needs longer soak coverage for TURN-heavy and network-switch-heavy environments
 - E2EE is primitive/foundation-level, not a complete ratcheting deployment model
 - Long soak testing and failure-mode coverage are still limited
 

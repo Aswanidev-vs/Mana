@@ -65,10 +65,11 @@ type Peer struct {
 	JitterBuffers map[uint32]*JitterBuffer
 
 	onTrack func(peerID string, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver)
+	onRecoveryNeeded func(peerID, roomID, reason string)
 }
 
 // NewPeer creates a new Peer wrapping the given pion PeerConnection.
-func NewPeer(id, userID, roomID string, pc *webrtc.PeerConnection, onTrack func(string, string, string)) *Peer {
+func NewPeer(id, userID, roomID string, pc *webrtc.PeerConnection, onTrack func(string, string, string), onRecoveryNeeded func(string, string, string)) *Peer {
 	now := time.Now()
 	p := &Peer{
 		ID:                id,
@@ -101,6 +102,23 @@ func NewPeer(id, userID, roomID string, pc *webrtc.PeerConnection, onTrack func(
 		p.mu.Unlock()
 
 		log.Printf("Peer %s state: %s", id, state.String())
+	})
+
+	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
+		log.Printf("Peer %s ICE state: %s", id, state.String())
+
+		p.mu.RLock()
+		connectedOnce := p.initialConnected
+		p.mu.RUnlock()
+
+		if !connectedOnce {
+			return
+		}
+		if state == webrtc.ICEConnectionStateDisconnected || state == webrtc.ICEConnectionStateFailed {
+			if onRecoveryNeeded != nil {
+				go onRecoveryNeeded(id, roomID, state.String())
+			}
+		}
 	})
 
 	pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
@@ -295,14 +313,20 @@ type Manager struct {
 	Simulcast  *SimulcastManager
 
 	// Callbacks
-	onTrack func(peerID, roomID, trackID string)
+	onTrack          func(peerID, roomID, trackID string)
+	onRecoveryNeeded func(peerID, roomID, reason string)
 
 	api  *webrtc.API
 	conf webrtc.Configuration
 }
 
-// NewManager creates a new RTC Manager with configurable STUN/TURN servers.
+// NewManager creates a new RTC Manager with configurable STUN servers.
 func NewManager(stunServers []string) *Manager {
+	return NewManagerWithICEServers(stunServers, nil, "all")
+}
+
+// NewManagerWithICEServers creates a new RTC Manager with configurable STUN/TURN servers.
+func NewManagerWithICEServers(stunServers []string, turnServers []core.ICEServerConfig, transportPolicy string) *Manager {
 	if len(stunServers) == 0 {
 		stunServers = []string{
 			"stun:stun.l.google.com:19302",
@@ -310,12 +334,19 @@ func NewManager(stunServers []string) *Manager {
 		}
 	}
 
-	conf := webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{
-				URLs: stunServers,
-			},
-		},
+	iceServers := []webrtc.ICEServer{{URLs: stunServers}}
+	for _, turn := range turnServers {
+		iceServers = append(iceServers, webrtc.ICEServer{
+			URLs:           turn.URLs,
+			Username:       turn.Username,
+			Credential:     turn.Credential,
+			CredentialType: parseCredentialType(turn.CredentialType),
+		})
+	}
+
+	conf := webrtc.Configuration{ICEServers: iceServers}
+	if transportPolicy == "relay" {
+		conf.ICETransportPolicy = webrtc.ICETransportPolicyRelay
 	}
 
 	// Create media engine with proper codec registration
@@ -429,7 +460,7 @@ func (m *Manager) CreatePeerConnection(id, userID, roomID string) (*Peer, error)
 		return nil, fmt.Errorf("new peer connection: %w", err)
 	}
 
-	peer := NewPeer(id, userID, roomID, pc, m.onTrack)
+	peer := NewPeer(id, userID, roomID, pc, m.onTrack, m.onRecoveryNeeded)
 
 	// Link to room router
 	peer.Router = m.GetRouter(roomID)
@@ -446,6 +477,13 @@ func (m *Manager) SetOnTrack(handler func(peerID, roomID, trackID string)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onTrack = handler
+}
+
+// SetOnRecoveryNeeded registers a callback for network recovery and ICE restart requests.
+func (m *Manager) SetOnRecoveryNeeded(handler func(peerID, roomID, reason string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onRecoveryNeeded = handler
 }
 
 // GetPeer retrieves a tracked peer by ID.
@@ -625,6 +663,15 @@ func (m *Manager) RestartICE(peerID string) (*webrtc.SessionDescription, error) 
 // CreateLocalTrack creates a new local media track for sending.
 func CreateLocalTrack(codec webrtc.RTPCodecCapability, id, streamID string) (*webrtc.TrackLocalStaticRTP, error) {
 	return webrtc.NewTrackLocalStaticRTP(codec, id, streamID)
+}
+
+func parseCredentialType(value string) webrtc.ICECredentialType {
+	switch value {
+	case "oauth":
+		return webrtc.ICECredentialTypeOauth
+	default:
+		return webrtc.ICECredentialTypePassword
+	}
 }
 
 // PeerCount returns the number of tracked peers.

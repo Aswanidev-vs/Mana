@@ -64,6 +64,7 @@
   #video-grid video { height: 100%; border-radius: var(--radius); background: var(--surface); }
   #video-grid .video-card { position: relative; flex-shrink: 0; }
   #video-grid .label { position: absolute; bottom: 4px; left: 4px; font-size: 11px; background: rgba(0,0,0,0.7); padding: 2px 6px; border-radius: 4px; }
+  #call-status { position: absolute; top: 8px; left: 8px; font-size: 12px; background: rgba(15,23,42,0.85); padding: 6px 10px; border-radius: 999px; z-index: 2; }
   #video-controls { position: absolute; bottom: 8px; right: 8px; display: flex; gap: 6px; }
 
   /* ── Login overlay ──────────────────────────────────── */
@@ -116,6 +117,7 @@
   <div id="main">
     <!-- Video panel (hidden by default) -->
     <div id="video-panel">
+      <div id="call-status">Idle</div>
       <div id="video-grid"></div>
     </div>
 
@@ -138,10 +140,13 @@
 // State
 // ═══════════════════════════════════════════════════════════════════
 let ws, token, username, role, currentRoom = '';
-let pc = null, localStream = null, isMuted = false, isCameraOff = false;
+let pc = null, localStream = null, screenStream = null, isMuted = false, isCameraOff = false, isScreenSharing = false;
+let callMode = 'idle';
 let typingTimeout = null;
-const peerConnections = {}; // peerID -> RTCPeerConnection
-const remoteStreams = {};   // peerID -> MediaStream
+const deviceID = getOrCreateDeviceID();
+let syncCursor = Number(localStorage.getItem('mana-sync-cursor') || '0');
+const pendingCandidates = [];
+const subscribedTracks = new Set();
 
 // ═══════════════════════════════════════════════════════════════════
 // Login
@@ -174,9 +179,14 @@ document.getElementById('login-btn').onclick = async () => {
 // WebSocket Connection
 // ═══════════════════════════════════════════════════════════════════
 function connectWebSocket() {
-  ws = new WebSocket(`ws://${location.host}/ws?token=${token}`);
+  ws = new WebSocket(`ws://${location.host}/ws?token=${token}&device_id=${encodeURIComponent(deviceID)}`);
   ws.onopen = () => {
     setBadge('online', 'connected');
+    ws.send(JSON.stringify({type: 'sync_request', device_id: deviceID, cursor: syncCursor}));
+    if (currentRoom) {
+      ws.send(JSON.stringify({type: 'join', room_id: currentRoom, from: username}));
+      if (pc) notifyNetworkChange('ws_reconnected');
+    }
     loadRooms();
   };
   ws.onclose = () => {
@@ -199,6 +209,7 @@ function setBadge(color, text) {
 function handleServerMessage(msg) {
   switch (msg.type) {
     case 'message':      onChatMessage(msg); break;
+    case 'message_sync': onMessageSync(msg); break;
     case 'ack':          onAck(msg); break;
     case 'presence':     onPresence(msg); break;
     case 'typing':       onTyping(msg); break;
@@ -206,6 +217,8 @@ function handleServerMessage(msg) {
     case 'answer':       onAnswer(msg); break;
     case 'candidate':    onCandidate(msg); break;
     case 'track_added':  onTrackAdded(msg); break;
+    case 'call_start':   onCallStarted(msg); break;
+    case 'call_end':     onCallEnded(msg); break;
     case 'mute':         onRemoteMute(msg); break;
     case 'camera_toggle':onRemoteCamera(msg); break;
     case 'key_exchange': onKeyExchange(msg); break;
@@ -286,6 +299,19 @@ function sendMessage() {
 function onChatMessage(msg) {
   const text = new TextDecoder().decode(new Uint8Array(msg.payload));
   addChatBubble(text, msg.from || msg.sender_id, '', false);
+  updateSyncCursor(msg.sequence);
+}
+
+function onMessageSync(msg) {
+  const history = Array.isArray(msg.messages) ? msg.messages : [];
+  if (!history.length) return;
+  addSystemMessage(`Replayed ${history.length} messages for ${msg.reason || 'reconnect'}`);
+  history.forEach(item => {
+    const text = new TextDecoder().decode(new Uint8Array(item.payload || []));
+    addChatBubble(text, item.sender_id || item.from || 'history', '', item.sender_id === username);
+    updateSyncCursor(item.sequence);
+  });
+  updateSyncCursor(msg.cursor);
 }
 
 function addChatBubble(text, from, ackId, self) {
@@ -358,6 +384,10 @@ document.getElementById('leave-btn').onclick = () => leaveRoom();
 
 async function toggleCall() {
   if (pc) { stopCall(); return; }
+  if (!currentRoom) {
+    addSystemMessage('Join a room before starting a call.');
+    return;
+  }
   try {
     localStream = await navigator.mediaDevices.getUserMedia({video: true, audio: true});
   } catch (e) {
@@ -365,25 +395,52 @@ async function toggleCall() {
     addSystemMessage('Cannot access camera/microphone: ' + e.message);
     return;
   }
-  startCall(localStream);
+  startCall(localStream, 'video');
 }
 
 async function toggleScreen() {
-  if (pc) { stopCall(); return; }
+  if (!currentRoom) {
+    addSystemMessage('Join a room before sharing your screen.');
+    return;
+  }
+  if (pc && !isScreenSharing) {
+    try {
+      screenStream = await navigator.mediaDevices.getDisplayMedia({video: true, audio: true});
+    } catch (e) {
+      console.error('getDisplayMedia:', e);
+      return;
+    }
+    startScreenShareTrack(screenStream);
+    return;
+  }
+  if (pc && isScreenSharing) {
+    stopScreenShareTrack();
+    return;
+  }
   try {
-    localStream = await navigator.mediaDevices.getDisplayMedia({video: true, audio: true});
+    localStream = await buildScreenFirstStream();
   } catch (e) {
     console.error('getDisplayMedia:', e);
     return;
   }
-  startCall(localStream);
+  startCall(localStream, 'screen');
 }
 
-function startCall(stream) {
+function startCall(stream, mode) {
+  callMode = mode || 'video';
   document.getElementById('video-panel').classList.add('open');
   addLocalVideo(stream);
+  setCallStatus(callMode === 'screen' ? 'Starting screen share...' : 'Starting call...');
   document.getElementById('call-btn').textContent = 'End Call';
   document.getElementById('call-btn').classList.replace('btn-secondary', 'btn-danger');
+  document.getElementById('screen-btn').textContent = callMode === 'screen' ? 'Stop Screen' : 'Screen';
+
+  ws.send(JSON.stringify({
+    type: 'call_start',
+    room_id: currentRoom,
+    from: username,
+    payload: Array.from(new TextEncoder().encode('video'))
+  }));
 
   pc = new RTCPeerConnection({
     iceServers: [{urls: 'stun:stun.l.google.com:19302'}, {urls: 'stun:stun1.l.google.com:19302'}]
@@ -402,8 +459,17 @@ function startCall(stream) {
     }
   };
 
-  pc.ontrack = (e) => {
-    addRemoteVideo('remote-' + Date.now(), e.streams[0]);
+  pc.ontrack = (e) => addRemoteTrack(trackCardID(e), e.streams[0], e.track);
+
+  pc.oniceconnectionstatechange = () => {
+    setCallStatus(`ICE ${pc.iceConnectionState}`);
+    if (pc && (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed')) {
+      requestIceRestart();
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    setCallStatus(`Call ${pc.connectionState}`);
   };
 
   pc.onnegotiationneeded = async () => {
@@ -419,12 +485,22 @@ function startCall(stream) {
 }
 
 function stopCall() {
+  if (ws && ws.readyState === WebSocket.OPEN && currentRoom) {
+    ws.send(JSON.stringify({type: 'call_end', room_id: currentRoom, from: username}));
+  }
   if (pc) { pc.close(); pc = null; }
   if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  if (screenStream) { screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
+  isScreenSharing = false;
+  callMode = 'idle';
+  pendingCandidates.length = 0;
+  subscribedTracks.clear();
   document.getElementById('video-panel').classList.remove('open');
   document.getElementById('video-grid').innerHTML = '';
+  setCallStatus('Idle');
   document.getElementById('call-btn').textContent = 'Call';
   document.getElementById('call-btn').classList.replace('btn-danger', 'btn-secondary');
+  document.getElementById('screen-btn').textContent = 'Screen';
 }
 
 function addLocalVideo(stream) {
@@ -458,6 +534,32 @@ function addRemoteVideo(id, stream) {
   grid.appendChild(card);
 }
 
+function addRemoteTrack(id, stream, track) {
+  let card = document.getElementById('card-' + id);
+  if (!card) {
+    const grid = document.getElementById('video-grid');
+    card = document.createElement('div');
+    card.className = 'video-card';
+    card.id = 'card-' + id;
+    const media = document.createElement(track.kind === 'audio' ? 'audio' : 'video');
+    media.autoplay = true;
+    media.playsInline = true;
+    media.srcObject = stream;
+    card.prepend(media);
+    grid.appendChild(card);
+  } else {
+    const media = card.querySelector('video, audio');
+    if (media) media.srcObject = stream;
+  }
+
+  const oldLabel = card.querySelector('.label');
+  if (oldLabel) oldLabel.remove();
+  const label = document.createElement('div');
+  label.className = 'label';
+  label.textContent = `${id} · ${track.kind}`;
+  card.appendChild(label);
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Mute / Camera Toggle
 // ═══════════════════════════════════════════════════════════════════
@@ -489,11 +591,20 @@ function onRemoteCamera(msg) {
 // WebRTC Signaling Handlers
 // ═══════════════════════════════════════════════════════════════════
 async function onOffer(msg) {
-  if (!pc) return; // not in a call, ignore
+  if (!pc) {
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({video: true, audio: true});
+      startCall(localStream, 'video');
+    } catch (e) {
+      addSystemMessage('Incoming call could not access media: ' + e.message);
+      return;
+    }
+  }
   try {
     await pc.setRemoteDescription(new RTCSessionDescription({type: 'offer', sdp: msg.sdp}));
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
+    await flushPendingCandidates();
     ws.send(JSON.stringify({
       type: 'answer',
       from: username,
@@ -508,13 +619,17 @@ async function onAnswer(msg) {
   if (!pc) return;
   try {
     await pc.setRemoteDescription(new RTCSessionDescription({type: 'answer', sdp: msg.sdp}));
+    await flushPendingCandidates();
   } catch (e) { console.error('onAnswer:', e); }
 }
 
 async function onCandidate(msg) {
-  if (!pc) return;
   try {
     const c = typeof msg.candidate === 'string' ? JSON.parse(msg.candidate) : msg.candidate;
+    if (!pc || !pc.remoteDescription) {
+      pendingCandidates.push(c);
+      return;
+    }
     await pc.addIceCandidate(new RTCIceCandidate(c));
   } catch (e) { console.error('onCandidate:', e); }
 }
@@ -522,7 +637,70 @@ async function onCandidate(msg) {
 function onTrackAdded(msg) {
   // SFU notifies us a new track is available — in a full implementation
   // we would send a "subscribe" signal. For this demo the SFU auto-subscribes.
-  addSystemMessage(`New track from ${msg.from}: ${msg.payload}`);
+  const trackID = decodePayloadText(msg.payload);
+  if (!trackID || subscribedTracks.has(trackID) || !ws || ws.readyState !== WebSocket.OPEN) return;
+  subscribedTracks.add(trackID);
+  ws.send(JSON.stringify({
+    type: 'subscribe',
+    room_id: msg.room_id || currentRoom,
+    from: username,
+    payload: Array.from(new TextEncoder().encode(trackID))
+  }));
+  addSystemMessage(`Subscribed to ${msg.from}'s track ${trackID}`);
+}
+
+function startScreenShareTrack(stream) {
+  const screenTrack = stream.getVideoTracks()[0];
+  if (!screenTrack || !pc) return;
+  const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+  if (!sender) return;
+  sender.replaceTrack(screenTrack);
+  isScreenSharing = true;
+  callMode = 'screen';
+  setCallStatus('Sharing screen');
+  document.getElementById('screen-btn').textContent = 'Stop Screen';
+  ws.send(JSON.stringify({type: 'screen_share_start', room_id: currentRoom, from: username, payload: true}));
+  screenTrack.onended = () => stopScreenShareTrack();
+}
+
+function stopScreenShareTrack() {
+  if (!pc || !localStream) return;
+  const cameraTrack = localStream.getVideoTracks()[0];
+  const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+  if (sender && cameraTrack) sender.replaceTrack(cameraTrack);
+  if (screenStream) {
+    screenStream.getTracks().forEach(t => t.stop());
+    screenStream = null;
+  }
+  isScreenSharing = false;
+  callMode = 'video';
+  setCallStatus('Back to camera');
+  document.getElementById('screen-btn').textContent = 'Screen';
+  ws.send(JSON.stringify({type: 'screen_share_stop', room_id: currentRoom, from: username, payload: false}));
+}
+
+function requestIceRestart() {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !pc || !currentRoom) return;
+  setCallStatus('Recovering network...');
+  ws.send(JSON.stringify({type: 'ice_restart', room_id: currentRoom, from: username}));
+}
+
+function notifyNetworkChange(reason) {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !pc || !currentRoom) return;
+  setCallStatus('Network changed, renegotiating...');
+  ws.send(JSON.stringify({type: 'network_change', room_id: currentRoom, from: username, payload: Array.from(new TextEncoder().encode(reason || 'network_change'))}));
+}
+
+function onCallStarted(msg) {
+  if ((msg.room_id || currentRoom) === currentRoom) {
+    setCallStatus(`${msg.from || 'Someone'} started a call`);
+  }
+}
+
+function onCallEnded(msg) {
+  if ((msg.room_id || currentRoom) === currentRoom) {
+    setCallStatus('Call ended');
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -568,6 +746,65 @@ document.getElementById('create-room-btn').onclick = () => {
 // Helpers
 // ═══════════════════════════════════════════════════════════════════
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function setCallStatus(text) {
+  document.getElementById('call-status').textContent = text;
+}
+function decodePayloadText(payload) {
+  if (typeof payload === 'string') return payload;
+  if (Array.isArray(payload)) return new TextDecoder().decode(new Uint8Array(payload));
+  return '';
+}
+function trackCardID(event) {
+  const stream = event.streams && event.streams[0];
+  const streamID = stream && stream.id ? stream.id : 'stream';
+  return `${streamID}-${event.track.kind}-${event.track.id}`;
+}
+async function flushPendingCandidates() {
+  if (!pc || !pc.remoteDescription || !pendingCandidates.length) return;
+  const queued = pendingCandidates.splice(0, pendingCandidates.length);
+  for (const candidate of queued) {
+    try {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (e) {
+      console.error('flushPendingCandidates:', e);
+    }
+  }
+}
+async function buildScreenFirstStream() {
+  const display = await navigator.mediaDevices.getDisplayMedia({video: true, audio: true});
+  let mic = null;
+  try {
+    mic = await navigator.mediaDevices.getUserMedia({audio: true});
+  } catch (e) {
+    console.warn('microphone fallback unavailable:', e);
+  }
+  const tracks = [
+    ...display.getVideoTracks(),
+    ...display.getAudioTracks(),
+    ...(mic ? mic.getAudioTracks() : [])
+  ];
+  return new MediaStream(tracks);
+}
+function getOrCreateDeviceID() {
+  const key = 'mana-device-id';
+  let value = localStorage.getItem(key);
+  if (!value) {
+    value = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+    localStorage.setItem(key, value);
+  }
+  return value;
+}
+function updateSyncCursor(value) {
+  const next = Number(value || 0);
+  if (next > syncCursor) {
+    syncCursor = next;
+    localStorage.setItem('mana-sync-cursor', String(syncCursor));
+  }
+}
+window.addEventListener('online', () => notifyNetworkChange('browser_online'));
+if (navigator.connection && navigator.connection.addEventListener) {
+  navigator.connection.addEventListener('change', () => notifyNetworkChange('connection_change'));
+}
 </script>
 </body>
 </html>

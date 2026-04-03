@@ -34,6 +34,7 @@ type MessageStore struct {
 	mu       sync.RWMutex
 	path     string
 	messages []StoredMessage
+	nextSeq  uint64
 }
 
 func NewMessageStore(path string) (*MessageStore, error) {
@@ -59,6 +60,12 @@ func (s *MessageStore) SaveMessage(msg core.Message, recipients []string) (core.
 	}
 	if msg.Timestamp.IsZero() {
 		msg.Timestamp = time.Now()
+	}
+	if msg.Sequence == 0 {
+		s.nextSeq++
+		msg.Sequence = s.nextSeq
+	} else if msg.Sequence > s.nextSeq {
+		s.nextSeq = msg.Sequence
 	}
 
 	recipients = uniqueStrings(recipients)
@@ -109,6 +116,50 @@ func (s *MessageStore) SyncForUserSince(userID string, since time.Time) []core.M
 	return result
 }
 
+// SyncForUserAfterSequence returns up to limit messages for a user after a cursor.
+func (s *MessageStore) SyncForUserAfterSequence(userID string, after uint64, limit int) ([]core.Message, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = len(s.messages)
+	}
+
+	result := make([]core.Message, 0, min(limit, len(s.messages)))
+	hasMore := false
+	for _, item := range s.messages {
+		if item.Message.Sequence <= after {
+			continue
+		}
+		if item.Message.SenderID != userID && !slices.Contains(item.Recipients, userID) {
+			continue
+		}
+		if len(result) >= limit {
+			hasMore = true
+			break
+		}
+		result = append(result, item.Message)
+	}
+	return result, hasMore
+}
+
+// LatestSequenceForUser returns the highest known message sequence visible to the user.
+func (s *MessageStore) LatestSequenceForUser(userID string) uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var latest uint64
+	for _, item := range s.messages {
+		if item.Message.SenderID != userID && !slices.Contains(item.Recipients, userID) {
+			continue
+		}
+		if item.Message.Sequence > latest {
+			latest = item.Message.Sequence
+		}
+	}
+	return latest
+}
+
 func (s *MessageStore) updateDelivery(messageID, userID string, state DeliveryState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -143,6 +194,11 @@ func (s *MessageStore) load() error {
 		return fmt.Errorf("load message store: %w", err)
 	}
 	s.messages = snapshot.Messages
+	for _, item := range s.messages {
+		if item.Message.Sequence > s.nextSeq {
+			s.nextSeq = item.Message.Sequence
+		}
+	}
 	return nil
 }
 
@@ -179,4 +235,11 @@ func uniqueStrings(values []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

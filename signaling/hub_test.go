@@ -3,7 +3,9 @@ package signaling
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/Aswanidev-vs/mana/cluster"
 	"github.com/Aswanidev-vs/mana/core"
 	"github.com/Aswanidev-vs/mana/ws"
 )
@@ -172,5 +174,56 @@ func TestHubParticipantState(t *testing.T) {
 	state, _ = hub.GetParticipantState("room1", "peer1")
 	if state.CameraOn {
 		t.Fatal("expected camera to be off")
+	}
+}
+
+func TestHubClusterFanout(t *testing.T) {
+	bus := cluster.NewMemoryBackend()
+	hubA := NewHub()
+	hubB := NewHub()
+
+	if err := hubA.SetCluster("node-a", bus); err != nil {
+		t.Fatalf("set cluster on hubA: %v", err)
+	}
+	if err := hubB.SetCluster("node-b", bus); err != nil {
+		t.Fatalf("set cluster on hubB: %v", err)
+	}
+
+	connA := newMockConn()
+	connB := newMockConn()
+	hubA.RegisterPeer(&Peer{ID: "alice::web", UserID: "alice", Conn: connA})
+	hubB.RegisterPeer(&Peer{ID: "bob::web", UserID: "bob", Conn: connB})
+
+	if err := hubA.Send(context.Background(), core.Signal{
+		Type: core.SignalMessage,
+		From: "alice",
+		To:   "bob",
+	}); err != nil {
+		t.Fatalf("cluster send: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(connB.messages) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(connB.messages) != 1 {
+		t.Fatalf("expected remote node peer to receive 1 message, got %d", len(connB.messages))
+	}
+}
+
+func TestHubHandleSignalForwardsDirectWithoutRawDecode(t *testing.T) {
+	hub := NewHub()
+	conn := newMockConn()
+	hub.RegisterPeer(newTestPeer("peer1", conn))
+
+	hub.HandleSignal(context.Background(), core.Signal{
+		Type: core.SignalOffer,
+		From: "peer2",
+		To:   "peer1",
+		SDP:  "v=0",
+	})
+
+	if len(conn.messages) != 1 {
+		t.Fatalf("expected 1 direct signal, got %d", len(conn.messages))
 	}
 }

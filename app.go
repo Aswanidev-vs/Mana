@@ -13,17 +13,21 @@ import (
 	"time"
 
 	"github.com/Aswanidev-vs/mana/auth"
+	"github.com/Aswanidev-vs/mana/cluster"
 	"github.com/Aswanidev-vs/mana/core"
 	"github.com/Aswanidev-vs/mana/e2ee"
+	"github.com/Aswanidev-vs/mana/notification"
 	"github.com/Aswanidev-vs/mana/observ"
+	"github.com/Aswanidev-vs/mana/product"
 	"github.com/Aswanidev-vs/mana/room"
 	"github.com/Aswanidev-vs/mana/rtc"
 	"github.com/Aswanidev-vs/mana/signaling"
 	"github.com/Aswanidev-vs/mana/storage"
 	"github.com/Aswanidev-vs/mana/ws"
-	"github.com/Aswanidev-vs/mana/notification"
 
 	"github.com/pion/webrtc/v4"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // App is the main Mana application instance.
@@ -50,12 +54,15 @@ type App struct {
 	logger  *observ.Logger
 	metrics *observ.Metrics
 	store   *storage.MessageStore
+	product *product.Store
+	tracing *observ.Tracing
+	cluster cluster.Backend
 
 	// Session tracking
-	mu          sync.RWMutex
-	sessions    map[string]*room.UserSession
+	mu           sync.RWMutex
+	sessions     map[string]*room.UserSession
 	userSessions map[string]map[string]*room.UserSession
-	deviceSync  map[string]time.Time
+	deviceCursor map[string]uint64
 
 	// Event handlers (user-facing hooks)
 	onMessage   func(core.Message)
@@ -77,6 +84,10 @@ func New(cfg core.Config) *App {
 	if err != nil {
 		panic(fmt.Errorf("create message store: %w", err))
 	}
+	productStore, err := product.NewStore(cfg.ProductStorePath, cfg.AttachmentDir)
+	if err != nil {
+		panic(fmt.Errorf("create product store: %w", err))
+	}
 
 	if warnings := cfg.Validate(); len(warnings) > 0 {
 		for _, w := range warnings {
@@ -87,19 +98,52 @@ func New(cfg core.Config) *App {
 	hub := signaling.NewHub()
 
 	app := &App{
-		config:      cfg,
-		roomManager: room.NewManager(),
-		signalHub:   hub,
-		rtcManager:  rtc.NewManager(cfg.STUNServers),
-		callManager: rtc.NewCallManager(),
-		sessions:    make(map[string]*room.UserSession),
+		config:       cfg,
+		roomManager:  room.NewManager(),
+		signalHub:    hub,
+		rtcManager:   rtc.NewManagerWithICEServers(cfg.STUNServers, cfg.TURNServers, cfg.ICETransportPolicy),
+		callManager:  rtc.NewCallManager(),
+		sessions:     make(map[string]*room.UserSession),
 		userSessions: make(map[string]map[string]*room.UserSession),
-		deviceSync:  make(map[string]time.Time),
-		mux:         http.NewServeMux(),
-		logger:      logger,
-		metrics:     metrics,
-		store:       store,
-		notifHub:    notification.NewHub(logger),
+		deviceCursor: make(map[string]uint64),
+		mux:          http.NewServeMux(),
+		logger:       logger,
+		metrics:      metrics,
+		store:        store,
+		product:      productStore,
+		notifHub:     notification.NewHub(logger),
+	}
+
+	if cfg.EnableTracing {
+		tracing, err := observ.NewTracing(observ.TracingConfig{
+			ServiceName:    cfg.ServiceName,
+			ServiceVersion: cfg.ServiceVersion,
+			SampleRatio:    cfg.TraceSampleRatio,
+		})
+		if err != nil {
+			logger.Error("enable tracing: %v", err)
+		} else {
+			app.tracing = tracing
+		}
+	}
+
+	if cfg.PubSubBackend != "" {
+		bus, err := cluster.NewBackendFromConfig(cfg)
+		if err != nil {
+			logger.Error("enable cluster backend %s: %v", cfg.PubSubBackend, err)
+		} else {
+			app.cluster = bus
+			nodeID := cfg.ClusterNodeID
+			if nodeID == "" {
+				host, _ := os.Hostname()
+				nodeID = fmt.Sprintf("%s-%d", host, os.Getpid())
+			}
+			if err := hub.SetCluster(nodeID, bus); err != nil {
+				logger.Error("subscribe cluster backend %s: %v", cfg.PubSubBackend, err)
+			} else {
+				logger.Info("Cluster pub-sub enabled: backend=%s node=%s", bus.Kind(), nodeID)
+			}
+		}
 	}
 
 	// Wire hub lifecycle hooks
@@ -152,7 +196,7 @@ func New(cfg core.Config) *App {
 	// RTC signal wiring
 	if cfg.EnableRTC {
 		app.setupRTCSignaling()
-		logger.Info("WebRTC enabled: STUN=%v", cfg.STUNServers)
+		logger.Info("WebRTC enabled: STUN=%v TURN=%d policy=%s", cfg.STUNServers, len(cfg.TURNServers), cfg.ICETransportPolicy)
 	}
 
 	// WebSocket handler (uses ws package)
@@ -193,6 +237,7 @@ func (a *App) CallManager() *rtc.CallManager       { return a.callManager }
 func (a *App) Logger() *observ.Logger              { return a.logger }
 func (a *App) NotificationHub() *notification.Hub  { return a.notifHub }
 func (a *App) MessageStore() *storage.MessageStore { return a.store }
+func (a *App) ProductStore() *product.Store        { return a.product }
 
 // --- Server lifecycle ---
 
@@ -215,10 +260,18 @@ func (a *App) Start() error {
 		func() int64 { return int64(a.signalHub.PeerCount()) },
 		func() int64 { return int64(a.callManager.ActiveCallCount()) },
 	))
+	if a.tracing != nil {
+		a.mux.Handle("/debug/traces", a.tracing.Handler())
+	}
+
+	handler := http.Handler(a.mux)
+	if a.tracing != nil {
+		handler = a.tracing.HTTPMiddleware(handler)
+	}
 
 	a.server = &http.Server{
 		Addr:         addr,
-		Handler:      a.mux,
+		Handler:      handler,
 		ReadTimeout:  a.config.ReadTimeout,
 		WriteTimeout: a.config.WriteTimeout,
 		IdleTimeout:  a.config.IdleTimeout,
@@ -268,7 +321,14 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 
 	if a.server != nil {
-		return a.server.Shutdown(ctx)
+		err := a.server.Shutdown(ctx)
+		if a.cluster != nil {
+			_ = a.cluster.Close()
+		}
+		if a.tracing != nil {
+			_ = a.tracing.Shutdown(ctx)
+		}
+		return err
 	}
 	return nil
 }
@@ -277,11 +337,23 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 func (a *App) onWSConnect(peerID, username, userRole string, conn ws.Conn) {
 	ctx, cancel := context.WithCancel(context.Background())
-	_ = cancel
 	userID, deviceID := splitSessionID(peerID)
+	var span trace.Span
+	if a.tracing != nil {
+		ctx, span = a.tracing.StartSpan(ctx, "ws.connect",
+			attribute.String("session.id", peerID),
+			attribute.String("user.id", userID),
+			attribute.String("device.id", deviceID),
+		)
+	}
+	if span != nil {
+		defer span.End()
+	}
 
 	peer := &signaling.Peer{ID: peerID, UserID: userID, DeviceID: deviceID, Username: username, Conn: conn, Context: ctx, Cancel: cancel}
 	session := room.NewDeviceSession(peerID, userID, username, deviceID, conn)
+	_ = a.product.TouchDevice(userID, deviceID)
+	_ = a.product.UpsertProfile(product.Profile{UserID: userID, DisplayName: username})
 
 	a.mu.Lock()
 	if old, ok := a.sessions[peerID]; ok {
@@ -296,7 +368,7 @@ func (a *App) onWSConnect(peerID, username, userRole string, conn ws.Conn) {
 
 	a.signalHub.RegisterPeer(peer)
 	a.notifHub.Register(userID, peerID, conn)
-	a.replayOfflineSync(session)
+	a.replayOfflineSync(session, 0, "reconnect", a.config.ReplayBatchSize)
 	a.metrics.IncConnections()
 	a.logger.Info("User %s (%s) connected [role=%s device=%s]", userID, username, userRole, deviceID)
 }
@@ -312,10 +384,10 @@ func (a *App) onWSDisconnect(peerID string) {
 			delete(a.userSessions, userID)
 		}
 	}
-	a.deviceSync[deviceKey(userID, deviceID)] = time.Now()
 	a.mu.Unlock()
 	a.notifHub.Unregister(userID, peerID)
 	a.metrics.DecConnections()
+	a.logger.Info("User %s disconnected [device=%s]", userID, deviceID)
 }
 
 func (a *App) onWSMessage(peerID, username, userRole string, data []byte) {
@@ -330,13 +402,34 @@ func (a *App) onWSMessage(peerID, username, userRole string, data []byte) {
 	a.metrics.IncMessages()
 
 	ctx := context.Background()
+	var span trace.Span
+	if a.tracing != nil {
+		ctx, span = a.tracing.StartSpan(ctx, "ws.message",
+			attribute.String("session.id", peerID),
+			attribute.Int("message.bytes", len(data)),
+		)
+	}
+	if span != nil {
+		defer span.End()
+	}
 	peer := &signaling.Peer{ID: peerID, UserID: session.UserID, DeviceID: session.DeviceID, Username: username, Conn: session.Conn, Context: ctx}
 
 	// Send ack if the message contains an ack_id
 	var sig core.Signal
-	if json.Unmarshal(data, &sig) == nil && sig.AckID != "" {
-		ackData, _ := json.Marshal(core.AckMessage{Type: "ack", AckID: sig.AckID})
-		session.Conn.Write(ctx, ackData)
+	if json.Unmarshal(data, &sig) == nil && sig.Type != "" {
+		if sig.Type == core.SignalSyncRequest {
+			var req core.SyncRequest
+			if err := json.Unmarshal(data, &req); err == nil {
+				a.replayOfflineSync(session, req.Cursor, "client_request", req.Limit)
+				return
+			}
+		}
+		if sig.AckID != "" {
+			ackData, _ := json.Marshal(core.AckMessage{Type: "ack", AckID: sig.AckID})
+			session.Conn.Write(ctx, ackData)
+		}
+		a.router.HandleSignal(ctx, peer, userRole, sig)
+		return
 	}
 
 	a.router.HandleIncoming(ctx, peer, userRole, data)
@@ -344,14 +437,23 @@ func (a *App) onWSMessage(peerID, username, userRole string, data []byte) {
 
 func (a *App) handleFrameworkMessage(msg core.Message) {
 	recipients := a.messageRecipients(msg)
+	conversationID := messageConversationID(msg)
 	stored, err := a.store.SaveMessage(msg, recipients)
 	if err != nil {
 		a.logger.Error("persist message %s: %v", msg.ID, err)
 	} else {
 		msg = stored
+		_ = a.product.UpsertConversation(product.Conversation{
+			ID:           conversationID,
+			IsGroup:      msg.RoomID != "",
+			Participants: uniqueStrings(append([]string{msg.SenderID}, recipients...)),
+			Title:        msg.RoomID,
+		})
+		_ = a.product.AddMessage(conversationID, msg)
 		for _, recipient := range recipients {
 			if a.isUserOnline(recipient) {
 				_ = a.store.MarkDelivered(msg.ID, recipient)
+				_ = a.product.MarkDelivered(msg.ID, recipient)
 			}
 		}
 	}
@@ -389,16 +491,19 @@ func (a *App) isUserOnline(userID string) bool {
 	return len(a.userSessions[userID]) > 0
 }
 
-func (a *App) replayOfflineSync(session *room.UserSession) {
+func (a *App) replayOfflineSync(session *room.UserSession, requestedCursor uint64, reason string, limit int) {
 	if session == nil || a.store == nil {
 		return
 	}
 
 	a.mu.RLock()
-	since := a.deviceSync[deviceKey(session.UserID, session.DeviceID)]
+	cursor := a.deviceCursor[deviceKey(session.UserID, session.DeviceID)]
 	a.mu.RUnlock()
+	if requestedCursor > cursor {
+		cursor = requestedCursor
+	}
 
-	messages := a.store.SyncForUserSince(session.UserID, since)
+	messages, hasMore := a.store.SyncForUserAfterSequence(session.UserID, cursor, limit)
 	pending := a.store.PendingForUser(session.UserID)
 	if len(messages) == 0 && len(pending) > 0 {
 		messages = pending
@@ -410,7 +515,11 @@ func (a *App) replayOfflineSync(session *room.UserSession) {
 
 	payload, err := json.Marshal(core.DeviceSyncBatch{
 		Type:      string(core.SignalSync),
+		SessionID: session.SessionID,
 		DeviceID:  session.DeviceID,
+		Cursor:    maxMessageSequence(messages, cursor),
+		HasMore:   hasMore,
+		Reason:    reason,
 		Messages:  messages,
 		Timestamp: time.Now(),
 	})
@@ -420,14 +529,17 @@ func (a *App) replayOfflineSync(session *room.UserSession) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := session.Conn.Write(ctx, payload); err == nil {
+		maxSeq := cursor
 		for _, message := range messages {
 			_ = a.store.MarkDelivered(message.ID, session.UserID)
+			if message.Sequence > maxSeq {
+				maxSeq = message.Sequence
+			}
 		}
+		a.mu.Lock()
+		a.deviceCursor[deviceKey(session.UserID, session.DeviceID)] = maxSeq
+		a.mu.Unlock()
 	}
-
-	a.mu.Lock()
-	a.deviceSync[deviceKey(session.UserID, session.DeviceID)] = time.Now()
-	a.mu.Unlock()
 }
 
 // --- RTC signaling (extracted from app.go) ---
@@ -450,6 +562,22 @@ func (a *App) setupRTCSignaling() {
 		ctx := context.Background()
 		a.signalHub.BroadcastToRoom(ctx, roomID, peerID, core.Signal{
 			Type: "track_added", From: peerID, RoomID: roomID, Payload: []byte(trackID),
+		})
+	})
+	a.rtcManager.SetOnRecoveryNeeded(func(peerID, roomID, reason string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		offer, err := a.rtcManager.RestartICE(peerID)
+		if err != nil {
+			return
+		}
+		_ = a.signalHub.Send(ctx, core.Signal{
+			Type:    core.SignalOffer,
+			From:    "SFU",
+			To:      peerID,
+			RoomID:  roomID,
+			SDP:     offer.SDP,
+			Payload: []byte(reason),
 		})
 	})
 
@@ -483,6 +611,21 @@ func (a *App) setupRTCSignaling() {
 	})
 
 	a.signalHub.On(core.SignalICERestart, func(sig core.Signal) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		offer, err := a.rtcManager.RestartICE(sig.From)
+		if err != nil {
+			return
+		}
+		_ = a.signalHub.Send(ctx, core.Signal{
+			Type:   core.SignalOffer,
+			From:   "SFU",
+			To:     sig.From,
+			RoomID: sig.RoomID,
+			SDP:    offer.SDP,
+		})
+	})
+	a.signalHub.On(core.SignalNetworkChange, func(sig core.Signal) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		offer, err := a.rtcManager.RestartICE(sig.From)
@@ -561,4 +704,44 @@ func dedupeMessages(messages []core.Message) []core.Message {
 		result = append(result, message)
 	}
 	return result
+}
+
+func maxMessageSequence(messages []core.Message, fallback uint64) uint64 {
+	maxSeq := fallback
+	for _, message := range messages {
+		if message.Sequence > maxSeq {
+			maxSeq = message.Sequence
+		}
+	}
+	return maxSeq
+}
+
+func messageConversationID(msg core.Message) string {
+	if msg.RoomID != "" {
+		return msg.RoomID
+	}
+	if msg.TargetID == "" {
+		return "direct:" + msg.SenderID
+	}
+	left, right := msg.SenderID, msg.TargetID
+	if right < left {
+		left, right = right, left
+	}
+	return "dm:" + left + ":" + right
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }

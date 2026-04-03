@@ -445,8 +445,8 @@ async function fetchContacts(){
 async function fetchGroups(){
   try{const r=await fetch('/api/groups?user='+username);if(r.ok){const d=await r.json();
     if(Array.isArray(d))d.forEach(g=>{groups[g.id]={name:g.name,owner:g.owner,members:g.members||[]};
-      const k='g:'+g.id;if(!chats[k])chats[k]={type:'group',name:g.name,msgs:[],last:'',unread:0,time:new Date(),gid:g.id,members:g.members};
-      else{chats[k].members=g.members;chats[k].name=g.name}})}}catch(e){}
+      const k='g:'+g.id;if(!chats[k])chats[k]={type:'group',name:g.name,msgs:[],last:'',unread:0,time:new Date(),gid:g.id,rid:g.id,members:g.members};
+      else{chats[k].rid=g.id;chats[k].members=g.members;chats[k].name=g.name}})}}catch(e){}
   renderGroups();renderChats();
 }
 
@@ -464,14 +464,14 @@ async function fetchDMs(){
 function connectWS(){
   const proto=location.protocol==='https:'?'wss:':'ws:';
   ws=new WebSocket(proto+'//'+location.host+'/ws?token='+encodeURIComponent(token)+'&device_id='+encodeURIComponent(deviceID));
-  ws.onopen=()=>{console.log('WS connected');reconnects=0;
+  ws.onopen=()=>{console.log('WS connected');reconnects=0;toast('Connected','ok');
     // Send sync signal to auto-join all rooms
     wsSend({type:'sync'});
     // Fetch online users
     fetchOnline();
   };
   ws.onmessage=e=>{try{const m=JSON.parse(e.data);handleMsg(m)}catch(er){console.error(er)}};
-  ws.onclose=()=>{if(token&&reconnects<5){reconnects++;setTimeout(connectWS,2000*reconnects)}};
+  ws.onclose=()=>{toast('Connection lost, reconnecting...','info');if(token&&reconnects<5){reconnects++;setTimeout(connectWS,2000*reconnects)}};
   ws.onerror=err=>console.error('WS error',err);
 }
 
@@ -895,6 +895,194 @@ function endCall(){if(pc){pc.close();pc=null}if(localStream){localStream.getTrac
   document.getElementById('btn-mute').innerHTML='🎤';document.getElementById('btn-cam').innerHTML='📷';stopTimer()}
 function startTimer(){callStart=Date.now();callTI=setInterval(()=>{const s=Math.floor((Date.now()-callStart)/1000);document.getElementById('call-timer').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')},1000)}
 function stopTimer(){clearInterval(callTI);document.getElementById('call-timer').textContent=''}
+
+async function loadChatHistory(chat, opts={}){
+  if(!chat?.rid)return;
+  try{
+    const r=await fetch('/api/messages?room_id='+encodeURIComponent(chat.rid)+'&user='+encodeURIComponent(username));
+    if(!r.ok)return;
+    const data=await r.json();
+    if(!Array.isArray(data))return;
+    const preserveUnread=opts.preserveUnread===true;
+    chat.msgs=data.map(msg=>({
+      id:msg.id||gid(),
+      sender:msg.from,
+      text:decodePayload(msg.payload),
+      time:new Date(msg.timestamp||Date.now()).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),
+      self:msg.from===username,
+      msgID:msg.id||null,
+      tickStatus:msg.from===username?'sent':''
+    }));
+    if(chat.msgs.length){
+      const lastRaw=data[data.length-1];
+      const lastMsg=chat.msgs[chat.msgs.length-1];
+      chat.last=lastMsg.text;
+      chat.time=new Date(lastRaw.timestamp||Date.now());
+    }
+    if(!preserveUnread)chat.unread=0;
+    if(currentChat&&getKey(currentChat)===getKey(chat)){
+      renderMsgs(chat);
+      scrollBot();
+    }
+    renderChats();
+  }catch(e){}
+}
+
+async function fetchGroups(){
+  try{
+    const r=await fetch('/api/groups?user='+username);
+    if(r.ok){
+      const d=await r.json();
+      if(Array.isArray(d))d.forEach(g=>{
+        groups[g.id]={name:g.name,owner:g.owner,members:g.members||[]};
+        const k='g:'+g.id;
+        if(!chats[k])chats[k]={type:'group',name:g.name,msgs:[],last:'',unread:0,time:new Date(),gid:g.id,rid:g.id,members:g.members};
+        else{chats[k].rid=g.id;chats[k].members=g.members;chats[k].name=g.name}
+      });
+    }
+  }catch(e){}
+  renderGroups();renderChats();
+}
+
+function connectWS(){
+  const proto=location.protocol==='https:'?'wss:':'ws:';
+  ws=new WebSocket(proto+'//'+location.host+'/ws?token='+encodeURIComponent(token)+'&device_id='+encodeURIComponent(deviceID));
+  ws.onopen=()=>{console.log('WS connected');reconnects=0;toast('Connected','ok');wsSend({type:'sync'});fetchOnline();};
+  ws.onmessage=e=>{try{const m=JSON.parse(e.data);handleMsg(m)}catch(er){console.error(er)}};
+  ws.onclose=()=>{toast('Connection lost, reconnecting...','info');if(token&&reconnects<5){reconnects++;setTimeout(connectWS,2000*reconnects)}};
+  ws.onerror=err=>console.error('WS error',err);
+}
+
+function handleAck(m){
+  const el=document.querySelector('.tick-'+m.ack_id);
+  if(el){el.textContent='âœ“âœ“';el.className='tick sent tick-'+m.ack_id}
+  for(const chat of Object.values(chats)){
+    for(const msg of chat.msgs){
+      if(msg.ackId===m.ack_id){
+        if(m.msg_id)msg.msgID=m.msg_id;
+        msg.tickStatus='sent';
+      }
+    }
+  }
+}
+
+function handleNotification(m){
+  console.log('Notification received:', m);
+  const d=m.data||{};
+  const type=d.type||m.type;
+
+  if(type==='delivery'){
+    handleDelivery(d);
+  }else if(type==='read_receipt'){
+    handleReadReceipt(d);
+  }else if(type==='sync_complete'){
+    toast('Connection synchronized','ok');
+    Promise.all([fetchContacts(),fetchGroups(),fetchDMs()]).then(()=>{
+      if(currentChat){
+        const key=getKey(currentChat);
+        if(key&&chats[key])loadChatHistory(chats[key],{preserveUnread:true});
+      }
+    }).catch(()=>{});
+  }else if(type==='new_message'){
+    if(!currentChat || (currentChat.rid !== d.room_id && getKey(currentChat) !== 'g:'+d.room_id)){
+      toast(m.body || 'New message received', 'info');
+      showBrowserNotif(m.title || 'Mana Chat', m.body, () => {
+        for(const [k, c] of Object.entries(chats)){
+          if(c.rid === d.room_id || k === 'g:'+d.room_id){
+            switchTo(k); break;
+          }
+        }
+      });
+    }
+  }else{
+    toast(m.body || m.title || 'Notification','info');
+  }
+}
+
+function handlePresence(m){
+  let usernameKey=m.username, online=m.online;
+  if((usernameKey===undefined||online===undefined)&&m.payload){
+    try{
+      const parsed=JSON.parse(decodePayload(m.payload));
+      usernameKey=parsed.username;
+      online=parsed.online;
+    }catch(e){}
+  }
+  if(!usernameKey)return;
+  if(online){onlineUsers[usernameKey]=true;if(contacts[usernameKey])contacts[usernameKey].online=true}
+  else{delete onlineUsers[usernameKey];if(contacts[usernameKey])contacts[usernameKey].online=false}
+  renderContacts();renderChats();updateStatus();
+}
+
+function handleDelivery(m){
+  const mid=m.msg_id||m.msgID;
+  const ackId=m.ack_id||m.ackId;
+  for(const chat of Object.values(chats)){
+    for(const msg of chat.msgs){
+      if(((mid&&msg.msgID===mid)||(ackId&&msg.ackId===ackId))&&msg.self){
+        const el=document.querySelector('.tick-'+msg.ackId);
+        if(el){
+          if(m.status==='delivered'){el.textContent='âœ“âœ“';el.className='tick delivered'}
+          else if(m.status==='read'){el.textContent='âœ“âœ“';el.className='tick read'}
+        }
+        if(mid)msg.msgID=mid;
+        if(m.status)msg.tickStatus=m.status;
+      }
+    }
+  }
+}
+
+function openGrp(id){
+  const k='g:'+id, g=groups[id];
+  if(!g)return;
+  if(!chats[k])chats[k]={type:'group',name:g.name,msgs:[],last:'',unread:0,time:new Date(),gid:id,rid:id,members:g.members};
+  else chats[k].rid=id;
+  switchTo(k);
+  switchTab('chats',document.querySelector('.tabs button'));
+}
+
+function switchTo(k){
+  const chat=chats[k];if(!chat)return;
+  currentChat={type:chat.type,id:k,name:chat.name,other:chat.other,gid:chat.gid,rid:chat.rid};
+  chat.unread=0;
+
+  if(chat.rid)wsSend({type:'join',room_id:chat.rid});
+  wsSend({type:'sync'});
+
+  document.getElementById('no-chat').style.display='none';
+  document.getElementById('chat-view').style.display='flex';
+
+  const av=document.getElementById('ch-avatar');
+  if(chat.type==='dm'){av.className='cavatar '+avColor(chat.name);av.textContent=chat.name[0].toUpperCase();document.getElementById('btn-mem').style.display='none'}
+  else{av.className='cavatar av-purple';av.textContent='ðŸ‘¥';document.getElementById('btn-mem').style.display=''}
+
+  document.getElementById('ch-name').innerHTML=esc(chat.name)+' <span class="lock">ðŸ”’</span>';
+  updateStatus();renderMsgs(chat);renderChats();scrollBot();
+  loadChatHistory(chat);
+
+  if(chat.rid)wsSend({type:'mark_read',room_id:chat.rid});
+  if(chat.rid)fetch('/api/messages/read',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room_id:chat.rid,username})});
+}
+
+async function createGroup(){
+  const name=document.getElementById('grp-name').value.trim();if(!name){toast('Enter a group name','err');return}
+  const cbs=document.querySelectorAll('#grp-members input:checked'),members=Array.from(cbs).map(c=>c.value);
+  try{
+    const r=await fetch('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,owner:username,members})});
+    if(r.ok){
+      const g=await r.json();
+      groups[g.id]={name:g.name,owner:g.owner,members:g.members};
+      const k='g:'+g.id;
+      chats[k]={type:'group',name:g.name,msgs:[],last:'',unread:0,time:new Date(),gid:g.id,rid:g.id,members:g.members};
+      toast('Group "'+name+'" created','ok');
+      hideGroupModal();
+      renderGroups();
+      renderChats();
+      switchTo(k);
+      switchTab('chats',document.querySelector('.tabs button'));
+    }else toast(await r.text(),'err')
+  }catch(e){toast(e.message,'err')}
+}
 
 // ============================================================
 // MODAL CLICK-OUTSIDE

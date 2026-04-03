@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sync"
+	"time"
 
+	"github.com/Aswanidev-vs/mana/cluster"
 	"github.com/Aswanidev-vs/mana/core"
 	"github.com/Aswanidev-vs/mana/ws"
 )
@@ -39,6 +42,10 @@ type Hub struct {
 
 	// Participant state tracking for video calls
 	participantState map[string]map[string]*ParticipantState
+
+	clusterNodeID string
+	clusterBus    cluster.Backend
+	clusterSub    io.Closer
 }
 
 // ParticipantState tracks per-participant signaling state.
@@ -73,6 +80,27 @@ func (h *Hub) RegisterPeer(peer *Peer) {
 		}
 		h.userPeers[peer.UserID][peer.ID] = true
 	}
+}
+
+// SetCluster wires a pub-sub backend for multi-node signal fanout.
+func (h *Hub) SetCluster(nodeID string, backend cluster.Backend) error {
+	if backend == nil {
+		return nil
+	}
+	sub, err := backend.Subscribe(h.handleClusterEvent)
+	if err != nil {
+		return err
+	}
+
+	h.mu.Lock()
+	if h.clusterSub != nil {
+		_ = h.clusterSub.Close()
+	}
+	h.clusterNodeID = nodeID
+	h.clusterBus = backend
+	h.clusterSub = sub
+	h.mu.Unlock()
+	return nil
 }
 
 // SetOnJoin registers a callback for when a peer joins a room.
@@ -185,64 +213,50 @@ func (h *Hub) On(sigType core.SignalType, handler func(core.Signal)) {
 
 // Send transmits a signal to a specific peer.
 func (h *Hub) Send(ctx context.Context, signal core.Signal) error {
+	delivered := h.sendLocal(ctx, signal)
+
 	h.mu.RLock()
-	peer, ok := h.peers[signal.To]
-	var userPeerIDs map[string]bool
-	if !ok {
-		if peers := h.userPeers[signal.To]; len(peers) > 0 {
-			userPeerIDs = make(map[string]bool, len(peers))
-			for peerID := range peers {
-				userPeerIDs[peerID] = true
-			}
-		}
-	}
+	nodeID := h.clusterNodeID
+	bus := h.clusterBus
 	h.mu.RUnlock()
 
-	if !ok && len(userPeerIDs) == 0 {
-		return fmt.Errorf("peer %s not found", signal.To)
-	}
-
-	data, err := json.Marshal(signal)
-	if err != nil {
-		return fmt.Errorf("marshal signal: %w", err)
-	}
-
-	if len(userPeerIDs) > 0 {
-		for peerID := range userPeerIDs {
-			h.mu.RLock()
-			targetPeer := h.peers[peerID]
-			h.mu.RUnlock()
-			if targetPeer != nil {
-				_ = targetPeer.Conn.Write(ctx, data)
-			}
+	if bus != nil {
+		if err := bus.Publish(ctx, cluster.Event{
+			Type:   cluster.EventDirect,
+			NodeID: nodeID,
+			Signal: signal,
+		}); err != nil && !delivered {
+			return err
 		}
+		if !delivered {
+			return nil
+		}
+	}
+
+	if delivered {
 		return nil
 	}
-
-	return peer.Conn.Write(ctx, data)
+	return fmt.Errorf("peer %s not found", signal.To)
 }
 
 // BroadcastToRoom sends a signal to all peers in a specific room (except sender).
 func (h *Hub) BroadcastToRoom(ctx context.Context, roomID, senderID string, signal core.Signal) error {
+	delivered := h.broadcastLocal(ctx, roomID, senderID, signal)
+
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	nodeID := h.clusterNodeID
+	bus := h.clusterBus
+	h.mu.RUnlock()
 
-	peers, ok := h.roomPeers[roomID]
-	if !ok {
-		return nil // no peers in room
-	}
-
-	data, err := json.Marshal(signal)
-	if err != nil {
-		return fmt.Errorf("marshal signal: %w", err)
-	}
-
-	for peerID := range peers {
-		if peerID == senderID {
-			continue
-		}
-		if peer, exists := h.peers[peerID]; exists {
-			_ = peer.Conn.Write(ctx, data)
+	if bus != nil {
+		if err := bus.Publish(ctx, cluster.Event{
+			Type:     cluster.EventRoom,
+			NodeID:   nodeID,
+			RoomID:   roomID,
+			SenderID: senderID,
+			Signal:   signal,
+		}); err != nil && !delivered {
+			return err
 		}
 	}
 	return nil
@@ -280,6 +294,13 @@ func (h *Hub) HandleMessage(ctx context.Context, data []byte) error {
 		return fmt.Errorf("unmarshal signal: %w", err)
 	}
 
+	h.HandleSignal(ctx, signal)
+	return nil
+}
+
+// HandleSignal forwards and dispatches an already-decoded signal.
+func (h *Hub) HandleSignal(ctx context.Context, signal core.Signal) {
+
 	// If signal has a target peer, forward directly
 	if signal.To != "" {
 		if err := h.Send(ctx, signal); err != nil {
@@ -288,7 +309,6 @@ func (h *Hub) HandleMessage(ctx context.Context, data []byte) error {
 	}
 
 	h.Dispatch(signal)
-	return nil
 }
 
 // Dispatch invokes registered handlers for a parsed signal without forwarding it.
@@ -324,6 +344,20 @@ func (h *Hub) UserPeerIDs(userID string) []string {
 		ids = append(ids, peerID)
 	}
 	return ids
+}
+
+// Peer returns a snapshot of a registered peer by session ID.
+func (h *Hub) Peer(id string) (*Peer, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	peer, ok := h.peers[id]
+	if !ok {
+		return nil, false
+	}
+
+	clone := *peer
+	return &clone, true
 }
 
 // GetParticipantState returns the participant state for a peer in a room.
@@ -368,5 +402,100 @@ func (h *Hub) UpdateParticipantState(roomID, peerID string, updates map[string]i
 	}
 	if level, ok := updates["audio_level"].(float64); ok {
 		state.AudioLevel = level
+	}
+}
+
+func (h *Hub) sendLocal(ctx context.Context, signal core.Signal) bool {
+	h.mu.RLock()
+	peer, ok := h.peers[signal.To]
+	var userPeerIDs map[string]bool
+	if !ok {
+		if peers := h.userPeers[signal.To]; len(peers) > 0 {
+			userPeerIDs = make(map[string]bool, len(peers))
+			for peerID := range peers {
+				userPeerIDs[peerID] = true
+			}
+		}
+	}
+	h.mu.RUnlock()
+
+	if !ok && len(userPeerIDs) == 0 {
+		return false
+	}
+
+	data, err := json.Marshal(signal)
+	if err != nil {
+		return false
+	}
+
+	if len(userPeerIDs) > 0 {
+		for peerID := range userPeerIDs {
+			h.mu.RLock()
+			targetPeer := h.peers[peerID]
+			h.mu.RUnlock()
+			if targetPeer != nil {
+				_ = targetPeer.Conn.Write(ctx, data)
+			}
+		}
+		return true
+	}
+
+	if peer != nil {
+		_ = peer.Conn.Write(ctx, data)
+		return true
+	}
+	return false
+}
+
+func (h *Hub) broadcastLocal(ctx context.Context, roomID, senderID string, signal core.Signal) bool {
+	h.mu.RLock()
+	peers, ok := h.roomPeers[roomID]
+	if !ok {
+		h.mu.RUnlock()
+		return false
+	}
+	peerIDs := make([]string, 0, len(peers))
+	for peerID := range peers {
+		peerIDs = append(peerIDs, peerID)
+	}
+	h.mu.RUnlock()
+
+	data, err := json.Marshal(signal)
+	if err != nil {
+		return false
+	}
+
+	delivered := false
+	for _, peerID := range peerIDs {
+		if peerID == senderID {
+			continue
+		}
+		h.mu.RLock()
+		peer := h.peers[peerID]
+		h.mu.RUnlock()
+		if peer != nil {
+			delivered = true
+			_ = peer.Conn.Write(ctx, data)
+		}
+	}
+	return delivered
+}
+
+func (h *Hub) handleClusterEvent(event cluster.Event) {
+	h.mu.RLock()
+	if event.NodeID == "" || event.NodeID == h.clusterNodeID {
+		h.mu.RUnlock()
+		return
+	}
+	h.mu.RUnlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	switch event.Type {
+	case cluster.EventDirect:
+		h.sendLocal(ctx, event.Signal)
+	case cluster.EventRoom:
+		h.broadcastLocal(ctx, event.RoomID, event.SenderID, event.Signal)
 	}
 }
