@@ -1,0 +1,192 @@
+{
+  "profiles": {
+    "kannapi": {
+      "user_id": "kannapi",
+      "display_name": "kannapi",
+      "updated_at": "2026-04-03T23:59:04.4719462+05:30"
+    },
+    "messenger_test_1": {
+      "user_id": "messenger_test_1",
+      "display_name": "messenger_test_1",
+      "updated_at": "2026-04-03T20:57:03.8895196+05:30"
+    },
+    "messenger_test_2": {
+      "user_id": "messenger_test_2",
+      "display_name": "messenger_test_2",
+      "updated_at": "2026-04-03T21:14:09.9025989+05:30"
+    },
+    "protocol_user_1": {
+      "user_id": "protocol_user_1",
+      "display_name": "protocol_user_1",
+      "updated_at": "2026-04-03T21:41:15.0944262+05:30"
+    },
+    "secure_user": {
+      "user_id": "secure_user",
+      "display_name": "secure_user",
+      "updated_at": "2026-04-03T21:44:56.7044952+05:30"
+    },
+    "testuser": {
+      "user_id": "testuser",
+      "display_name": "testuser",
+      "updated_at": "2026-04-03T20:56:35.7927065+05:30"
+    },
+    "testuser-1775239637": {
+      "user_id": "testuser-1775239637",
+      "display_name": "testuser-1775239637",
+      "status": "Hey there! I am using Kuruvi.",
+      "updated_at": "2026-04-03T23:37:17.3991541+05:30"
+    },
+    "testuser-1775240252": {
+      "user_id": "testuser-1775240252",
+      "display_name": "testuser-1775240252",
+      "status": "Hey there! I am using Kuruvi.",
+      "updated_at": "2026-04-03T23:47:33.4233192+05:30"
+    },
+    "vazha": {
+      "user_id": "vazha",
+      "display_name": "vazha",
+      "updated_at": "2026-04-03T23:58:46.9709761+05:30"
+    },
+    "veldora1234": {
+      "user_id": "veldora1234",
+      "display_name": "veldora1234",
+      "updated_at": "2026-04-03T23:58:30.4940793+05:30"
+    }
+  },
+  "preferences": {},
+  "contacts": {},
+  "blocked": {},
+  "devices": {
+    "kannapi": {
+      "": {
+        "device_id": "",
+        "last_seen_at": "2026-04-03T23:59:04.4686296+05:30",
+        "linked_at": "2026-04-03T23:42:23.3929804+05:30"
+      }
+    },
+    "messenger_test_1": {
+      "": {
+        "device_id": "",
+        "last_seen_at": "2026-04-03T20:57:03.8873936+05:30",
+        "linked_at": "2026-04-03T20:57:03.8873936+05:30"
+      }
+    },
+    "messenger_test_2": {
+      "": {
+        "device_id": "",
+        "last_seen_at": "2026-04-03T21:14:09.8983618+05:30",
+        "linked_at": "2026-04-03T20:57:26.5372311+05:30"
+      }
+    },
+    "protocol_user_1": {
+      "": {
+        "device_id": "",
+        "last_seen_at": "2026-04-03T21:41:15.0928161+05:30",
+        "linked_at": "2026-04-03T21:14:44.4758578+05:30"
+      }
+    },
+    "secure_user": {
+      "": {
+        "device_id": "",
+        "last_seen_at": "2026-04-03T21:44:56.7004711+05:30",
+        "linked_at": "2026-04-03T21:41:42.3918298+05:30"
+      }
+    },
+    "testuser": {
+      "": {
+        "device_id": "",
+        "last_seen_at": "2026-04-03T20:56:35.7875849+05:30",
+        "linked_at": "2026-04-03T20:53:28.1677285+05:30"
+      }
+    },
+    "vazha": {
+      "": {
+        "device_id": "",
+        "last_seen_at": "2026-04-03T23:58:46.9681991+05:30",
+        "linked_at": "2026-04-03T23:43:18.6155568+05:30"
+      }
+    },
+    "veldora1234": {
+      "": {
+        "device_id": "",
+        "last_seen_at": "2026-04-03T23:58:30.4912864+05:30",
+        "linked_at": "2026-04-03T20:49:44.8216537+05:30"
+      }
+    }
+  },
+  "conversations": {
+    "dm:kannapi:vazha": {
+      "id": "dm:kannapi:vazha",
+      "is_group": false,
+      "participants": [
+        "kannapi",
+        "vazha"
+      ],
+      "last_message_id": "msg-1775240948967545200",
+      "last_message_at": "2026-04-03T23:59:08.9675452+05:30",
+      "last_message_text": "\ufffdj{R`\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd\ufffdώb\u0003\ufffd}\fn\ufffdD\ufffd0\ufffd\ufffdq\ufffd",
+      "unread": {
+        "vazha": 1
+      },
+      "retention": {}
+    },
+    "dm:vazha:veldora1234": {
+      "id": "dm:vazha:veldora1234",
+      "is_group": false,
+      "participants": [
+        "vazha",
+        "veldora1234"
+      ],
+      "last_message_id": "msg-1775240964639276000",
+      "last_message_at": "2026-04-03T23:59:24.639276+05:30",
+      "last_message_text": "c̚v\ufffdb\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd3\u0015F\ufffdj\ufffd:D\ufffd\ufffd\u000ezD\ufffd^\ufffd\ufffd",
+      "unread": {
+        "veldora1234": 1
+      },
+      "retention": {}
+    }
+  },
+  "messages": {
+    "msg-1775240948967545200": {
+      "message": {
+        "id": "msg-1775240948967545200",
+        "sequence": 1,
+        "type": "message",
+        "sender_id": "kannapi",
+        "target_id": "vazha",
+        "payload": "92p7UmDl7b2Zwua4ytHPjmIDpX0Mbo1E6DC5lnGd",
+        "timestamp": "2026-04-03T23:59:08.9675452+05:30"
+      },
+      "conversation_id": "dm:kannapi:vazha",
+      "edited_at": "0001-01-01T00:00:00Z",
+      "deleted_at": "0001-01-01T00:00:00Z",
+      "delivered_to": {
+        "vazha": "2026-04-03T23:59:09.0209046+05:30"
+      }
+    },
+    "msg-1775240964639276000": {
+      "message": {
+        "id": "msg-1775240964639276000",
+        "sequence": 2,
+        "type": "message",
+        "sender_id": "vazha",
+        "target_id": "veldora1234",
+        "payload": "Y8yadoli73//g+mk9zMVRqlqjzpEqLYOekTNXq+d",
+        "timestamp": "2026-04-03T23:59:24.639276+05:30"
+      },
+      "conversation_id": "dm:vazha:veldora1234",
+      "edited_at": "0001-01-01T00:00:00Z",
+      "deleted_at": "0001-01-01T00:00:00Z"
+    }
+  },
+  "attachments": {},
+  "reports": {},
+  "conversation_messages": {
+    "dm:kannapi:vazha": [
+      "msg-1775240948967545200"
+    ],
+    "dm:vazha:veldora1234": [
+      "msg-1775240964639276000"
+    ]
+  }
+}
