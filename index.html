@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mana — Real-Time Communication Framework for Go</title>
+<meta name="description" content="Mana is a Go framework for building real-time communication apps with WebSocket messaging, WebRTC, rooms, E2EE, and plug-and-play SQL batteries.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!-- Top Navigation -->
+<nav class="topnav" id="topnav">
+  <div class="topnav-inner">
+    <a href="#hero" class="topnav-brand"><span class="brand-icon">◈</span> Mana</a>
+    <div class="topnav-links">
+      <a href="#getting-started">Get Started</a>
+      <a href="#features">Features</a>
+      <a href="#database">Database</a>
+      <a href="#examples">Examples</a>
+      <a href="https://github.com/Aswanidev-vs/mana" target="_blank" class="gh-link">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero" id="hero">
+  <div class="hero-glow"></div>
+  <div class="hero-content">
+    <div class="hero-badge">v0.1 · Go Framework</div>
+    <h1>Build Real-Time Apps<br><span class="gradient-text">Blazingly Fast.</span></h1>
+    <p class="hero-sub">Mana is a batteries-included Go framework for WebSocket messaging, WebRTC signaling, rooms, E2EE, and plug-and-play SQL persistence. Ship your chat app in hours, not weeks.</p>
+    <div class="hero-actions">
+      <a href="#getting-started" class="btn btn-primary">Get Started</a>
+      <div class="install-box"><code>go get github.com/Aswanidev-vs/mana</code></div>
+    </div>
+    <div class="hero-stats">
+      <div class="stat"><strong>3</strong><span>DB Drivers</span></div>
+      <div class="stat"><strong>6</strong><span>Chat Offers</span></div>
+      <div class="stat"><strong>~25</strong><span>Packages</span></div>
+      <div class="stat"><strong>100%</strong><span>Pure Go</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- Main Layout: Sidebar + Content -->
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <nav class="sidebar-nav">
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Introduction</div>
+        <a href="#getting-started">Getting Started</a>
+        <a href="#quick-start">Quick Start</a>
+        <a href="#architecture">Architecture</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Core</div>
+        <a href="#configuration">Configuration</a>
+        <a href="#hooks">Event Hooks</a>
+        <a href="#types">Types &amp; Signals</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Features</div>
+        <a href="#features">Overview</a>
+        <a href="#messaging">Messaging</a>
+        <a href="#rooms">Rooms</a>
+        <a href="#auth">Authentication</a>
+        <a href="#database">Database</a>
+        <a href="#webrtc">WebRTC</a>
+        <a href="#e2ee">E2EE</a>
+        <a href="#notifications">Notifications</a>
+        <a href="#clustering">Clustering</a>
+        <a href="#observability">Observability</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Advanced</div>
+        <a href="#dependency-injection">Dependency Injection</a>
+        <a href="#shared-transactions">Shared Transactions</a>
+        <a href="#examples">Examples</a>
+      </div>
+    </nav>
+  </aside>
+
+  <main class="content">
+
+    <!-- Getting Started -->
+    <section id="getting-started">
+      <h2>Getting Started</h2>
+      <p>Mana is a Go framework for building real-time communication applications — chat, video calling, collaboration tools, and more. It provides WebSocket management, room orchestration, WebRTC signaling, E2EE key exchange, and plug-and-play SQL persistence out of the box.</p>
+      <h3>Installation</h3>
+      <pre><code>go get github.com/Aswanidev-vs/mana</code></pre>
+      <h3>Requirements</h3>
+      <ul>
+        <li>Go 1.21 or later</li>
+        <li>No CGo required (pure Go SQLite via <code>modernc.org/sqlite</code>)</li>
+      </ul>
+    </section>
+
+    <!-- Quick Start -->
+    <section id="quick-start">
+      <h2>Quick Start</h2>
+      <p>The simplest Mana server — a fully functional WebSocket messaging backend in 15 lines:</p>
+      <pre><code class="lang-go">package main
+
+import (
+    "log"
+    mana "github.com/Aswanidev-vs/mana"
+    "github.com/Aswanidev-vs/mana/core"
+)
+
+func main() {
+    app := mana.New(core.Config{
+        Port:           8080,
+        AllowedOrigins: []string{"*"},
+        EnableRTC:      true,
+        EnableE2EE:     true,
+    })
+
+    app.OnMessage(func(msg core.Message) {
+        log.Printf("[%s] %s → %s", msg.RoomID, msg.SenderID, string(msg.Payload))
+    })
+
+    log.Fatal(app.Start())
+}</code></pre>
+      <p>Run it: <code>go run main.go</code>. Connect any WebSocket client to <code>ws://localhost:8080/ws</code>.</p>
+    </section>
+
+    <!-- Architecture -->
+    <section id="architecture">
+      <h2>Architecture</h2>
+      <p>Mana's architecture is modular — each concern lives in its own package, orchestrated by the central <code>App</code> struct in <code>app.go</code>.</p>
+      <div class="arch-grid">
+        <div class="arch-card"><strong>core/</strong><span>Shared types, config, and interfaces</span></div>
+        <div class="arch-card"><strong>ws/</strong><span>WebSocket handler and transport</span></div>
+        <div class="arch-card"><strong>signaling/</strong><span>Signal hub and message router</span></div>
+        <div class="arch-card"><strong>room/</strong><span>Room and session management</span></div>
+        <div class="arch-card"><strong>rtc/</strong><span>WebRTC manager, SFU, simulcast</span></div>
+        <div class="arch-card"><strong>e2ee/</strong><span>X3DH key exchange and crypto</span></div>
+        <div class="arch-card"><strong>auth/</strong><span>JWT, RBAC, rate limiting, accounts</span></div>
+        <div class="arch-card"><strong>storage/</strong><span>Message persistence (JSON + SQL)</span></div>
+        <div class="arch-card"><strong>storage/db/</strong><span>Plug-and-play database drivers</span></div>
+        <div class="arch-card"><strong>social/</strong><span>Profiles, contacts, blocking</span></div>
+        <div class="arch-card"><strong>settings/</strong><span>User preferences store</span></div>
+        <div class="arch-card"><strong>notification/</strong><span>User-targeted push alerts</span></div>
+        <div class="arch-card"><strong>cluster/</strong><span>Redis/NATS pub-sub fanout</span></div>
+        <div class="arch-card"><strong>observ/</strong><span>Logging, metrics, health, tracing</span></div>
+        <div class="arch-card"><strong>product/</strong><span>Conversations, devices, attachments</span></div>
+      </div>
+    </section>
+
+    <!-- Configuration -->
+    <section id="configuration">
+      <h2>Configuration</h2>
+      <p>All settings are defined in <code>core.Config</code>. Use <code>core.DefaultConfig()</code> for sensible defaults then override what you need.</p>
+      <div class="config-table-wrap">
+        <table class="config-table">
+          <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>Port</code></td><td>int</td><td>8080</td><td>HTTP listen port</td></tr>
+            <tr><td><code>Host</code></td><td>string</td><td>"0.0.0.0"</td><td>Bind address</td></tr>
+            <tr><td><code>EnableAuth</code></td><td>bool</td><td>false</td><td>Enable JWT auth on WebSocket</td></tr>
+            <tr><td><code>JWTSecret</code></td><td>string</td><td>""</td><td>JWT signing secret (≥32 bytes for prod)</td></tr>
+            <tr><td><code>JWTExpiry</code></td><td>Duration</td><td>24h</td><td>Token validity duration</td></tr>
+            <tr><td><code>EnableRTC</code></td><td>bool</td><td>false</td><td>Enable WebRTC signaling</td></tr>
+            <tr><td><code>EnableE2EE</code></td><td>bool</td><td>false</td><td>Enable E2EE key exchange</td></tr>
+            <tr><td><code>AllowedOrigins</code></td><td>[]string</td><td>[]</td><td>WebSocket CORS origins</td></tr>
+            <tr><td><code>MaxMessageSize</code></td><td>int64</td><td>64KB</td><td>Max WS message bytes</td></tr>
+            <tr><td><code>RateLimitPerSecond</code></td><td>int</td><td>100</td><td>Messages/sec per connection</td></tr>
+            <tr><td><code>DatabaseDriver</code></td><td>string</td><td>"sqlite"</td><td>"sqlite", "postgres", or "mysql"</td></tr>
+            <tr><td><code>DatabaseDSN</code></td><td>string</td><td>"mana.db"</td><td>Connection string or file path</td></tr>
+            <tr><td><code>DatabaseTablePrefix</code></td><td>string</td><td>""</td><td>Table prefix (e.g. "mana_")</td></tr>
+            <tr><td><code>PubSubBackend</code></td><td>string</td><td>""</td><td>"memory", "redis", or "nats"</td></tr>
+            <tr><td><code>EnableTracing</code></td><td>bool</td><td>false</td><td>OpenTelemetry tracing</td></tr>
+            <tr><td><code>EnableTLS</code></td><td>bool</td><td>false</td><td>HTTPS/WSS mode</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Event Hooks -->
+    <section id="hooks">
+      <h2>Event Hooks</h2>
+      <p>Mana exposes lifecycle hooks so your application logic reacts to real-time events without touching framework internals.</p>
+      <pre><code class="lang-go">app.OnMessage(func(msg core.Message) {
+    // Fires after every message is routed and stored
+})
+
+app.OnUserJoin(func(roomID string, user core.User) {
+    // Fires when a user joins a room
+})
+
+app.OnUserLeave(func(roomID string, user core.User) {
+    // Fires when a user disconnects from a room
+})
+
+app.OnCallStart(func(event core.CallEvent) {
+    // Fires when a WebRTC call begins
+})
+
+app.OnCallEnd(func(event core.CallEvent) {
+    // Fires when a WebRTC call ends
+})
+
+app.OnSignal(core.SignalTyping, func(sig core.Signal) {
+    // React to any signal type (typing, presence, etc.)
+})
+
+// Logic hooks (context-aware, for business logic)
+app.OnAccountCreated(func(ctx context.Context, user core.User) { })
+app.OnMessageStored(func(ctx context.Context, msg core.Message) { })</code></pre>
+    </section>
+
+    <!-- Types & Signals -->
+    <section id="types">
+      <h2>Types &amp; Signals</h2>
+      <p>Core types used throughout the framework:</p>
+      <pre><code class="lang-go">// Message — the fundamental unit of communication
+type Message struct {
+    ID        string    `json:"id"`
+    Sequence  uint64    `json:"sequence,omitempty"`
+    Type      string    `json:"type"`
+    RoomID    string    `json:"room_id,omitempty"`
+    SenderID  string    `json:"sender_id"`
+    TargetID  string    `json:"target_id,omitempty"`
+    Payload   []byte    `json:"payload"`
+    Timestamp time.Time `json:"timestamp"`
+    AckID     string    `json:"ack_id,omitempty"`
+}
+
+// Signal — WebRTC and signaling events
+type Signal struct {
+    Type      SignalType  `json:"type"`
+    From      string      `json:"from"`
+    To        string      `json:"to,omitempty"`
+    RoomID    string      `json:"room_id,omitempty"`
+    Payload   []byte      `json:"payload,omitempty"`
+    SDP       string      `json:"sdp,omitempty"`
+    Candidate interface{} `json:"candidate,omitempty"`
+}</code></pre>
+      <h3>Signal Types</h3>
+      <div class="tag-grid">
+        <span class="tag">offer</span><span class="tag">answer</span><span class="tag">candidate</span>
+        <span class="tag">join</span><span class="tag">leave</span><span class="tag">message</span>
+        <span class="tag">typing</span><span class="tag">key_exchange</span><span class="tag">call_start</span>
+        <span class="tag">call_end</span><span class="tag">mute</span><span class="tag">camera_toggle</span>
+        <span class="tag">screen_share_start</span><span class="tag">screen_share_stop</span>
+        <span class="tag">message_sync</span><span class="tag">sync_request</span>
+        <span class="tag">ice_restart</span><span class="tag">network_change</span>
+        <span class="tag">active_speaker</span><span class="tag">track_added</span>
+      </div>
+    </section>
+
+    <!-- Features Overview -->
+    <section id="features">
+      <h2>Features</h2>
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="feature-icon">💬</div>
+          <h3>Messaging</h3>
+          <p>1:1 and group messaging with acknowledgments, sequence tracking, cursor-based offline sync, and delivery receipts.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🔐</div>
+          <h3>Authentication</h3>
+          <p>JWT auth with RBAC, rate limiting, origin controls, and a built-in SQL account store with bcrypt hashing.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🗄️</div>
+          <h3>Plug-and-Play DB</h3>
+          <p>Point at SQLite, PostgreSQL, or MySQL — Mana auto-creates tables for messaging, identity, social, and settings.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📹</div>
+          <h3>WebRTC</h3>
+          <p>SFU-based architecture with offer/answer negotiation, ICE management, simulcast, congestion control, and jitter buffering.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🔒</div>
+          <h3>E2EE</h3>
+          <p>X3DH-style key exchange, Curve25519 key pairs, HKDF derivation, and AES-256-GCM encryption primitives.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🌐</div>
+          <h3>Clustering</h3>
+          <p>Stateless horizontal scaling via Redis or NATS pub-sub backends for multi-node signal fanout.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🏠</div>
+          <h3>Rooms</h3>
+          <p>Dynamic room creation, member tracking, and multi-device session management with per-device cursor sync.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📊</div>
+          <h3>Observability</h3>
+          <p>Structured logging, Prometheus-style metrics, health endpoints, and OpenTelemetry tracing with in-memory inspection.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Messaging -->
+    <section id="messaging">
+      <h2>Messaging</h2>
+      <p>Messages are automatically persisted, sequenced, and synced across devices. The framework handles offline delivery and cursor-based reconnect replay.</p>
+      <h3>Store Interface</h3>
+      <pre><code class="lang-go">type MessageStore interface {
+    SaveMessage(ctx context.Context, msg Message, recipients []string) (Message, error)
+    MarkDelivered(ctx context.Context, messageID, userID string) error
+    PendingForUser(ctx context.Context, userID string) []Message
+    SyncForUserSince(ctx context.Context, userID string, since time.Time) []Message
+    SyncForUserAfterSequence(ctx context.Context, userID string, after uint64, limit int) ([]Message, bool)
+    LatestSequenceForUser(ctx context.Context, userID string) uint64
+}</code></pre>
+      <h3>Client Sync Protocol</h3>
+      <p>Reconnecting clients send a <code>sync_request</code> with their last-known cursor. Mana responds with a <code>DeviceSyncBatch</code> containing any new messages and a pagination cursor.</p>
+      <pre><code class="lang-json">// Client → Server
+{"type": "sync_request", "cursor": 42, "limit": 50}
+
+// Server → Client
+{"type": "message_sync", "cursor": 87, "has_more": false, "messages": [...]}</code></pre>
+    </section>
+
+    <!-- Rooms -->
+    <section id="rooms">
+      <h2>Rooms</h2>
+      <p>The <code>room</code> package manages room lifecycle, member tracking, and multi-device sessions.</p>
+      <pre><code class="lang-go">// Access the room manager
+rm := app.RoomManager()
+
+// Rooms are automatically created when users join via signaling
+// You can also access rooms programmatically:
+rooms := rm.List()        // all active rooms
+room, err := rm.Get(id)   // get a specific room
+members := room.Members() // list members</code></pre>
+    </section>
+
+    <!-- Auth -->
+    <section id="auth">
+      <h2>Authentication</h2>
+      <p>Enable auth with <code>EnableAuth: true</code>. Mana provides JWT token generation/validation, RBAC, rate limiting, and a built-in SQL account store.</p>
+      <pre><code class="lang-go">cfg := core.DefaultConfig()
+cfg.EnableAuth = true
+cfg.JWTSecret = "your-secret-key-at-least-32-bytes"
+cfg.JWTIssuer = "my-app"
+
+app := mana.New(cfg)
+
+// Generate tokens
+token, _ := app.JWTAuth().GenerateToken(userID, username, auth.RoleUser)
+
+// Validate tokens
+claims, err := app.JWTAuth().ValidateToken(token)
+
+// Account Store (auto-created with DatabaseDSN)
+app.AccountStore().CreateUser(ctx, "alice", "password123")
+userID, err := app.AccountStore().Authenticate(ctx, "alice", "password123")</code></pre>
+      <h3>RBAC Roles</h3>
+      <div class="tag-grid">
+        <span class="tag">admin</span><span class="tag">moderator</span><span class="tag">user</span><span class="tag">guest</span>
+      </div>
+    </section>
+
+    <!-- Database -->
+    <section id="database">
+      <h2>Database — Plug-and-Play Batteries</h2>
+      <p>Mana's database layer uses standard <code>database/sql</code> with driver packages for SQLite, PostgreSQL, and MySQL. Point it at a DSN and the framework auto-creates all tables.</p>
+
+      <h3>Option A: Framework-Managed DSN</h3>
+      <pre><code class="lang-go">cfg := core.DefaultConfig()
+cfg.DatabaseDriver = db.SQLite        // or db.Postgres, db.MySQL
+cfg.DatabaseDSN    = "data/app.db"    // or your connection string
+cfg.DatabaseTablePrefix = "mana_"     // optional: prefix all tables
+
+app := mana.New(cfg)
+// AccountStore, MessageStore, ProfileStore, ContactStore, PreferenceStore
+// are all automatically wired and ready.</code></pre>
+
+      <h3>Option B: Bring Your Own <code>*sql.DB</code></h3>
+      <pre><code class="lang-go">// Connect with your own driver
+db, _ := sql.Open("pgx", "postgres://user:pass@localhost/mydb")
+
+app := mana.New(cfg)
+app.WithDatabase(db, manadb.Postgres)
+// Mana uses YOUR connection pool — shared transactions are possible!</code></pre>
+
+      <h3>Auto-Created Stores</h3>
+      <div class="config-table-wrap">
+        <table class="config-table">
+          <thead><tr><th>Store</th><th>Interface</th><th>Tables Created</th></tr></thead>
+          <tbody>
+            <tr><td>AccountStore</td><td><code>core.AccountStore</code></td><td><code>accounts</code></td></tr>
+            <tr><td>MessageStore</td><td><code>core.MessageStore</code></td><td><code>messages</code>, <code>delivery</code></td></tr>
+            <tr><td>ProfileStore</td><td><code>core.ProfileStore</code></td><td><code>profiles</code></td></tr>
+            <tr><td>ContactStore</td><td><code>core.ContactStore</code></td><td><code>contacts</code>, <code>blocks</code></td></tr>
+            <tr><td>PreferenceStore</td><td><code>core.PreferenceStore</code></td><td><code>preferences</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Supported Drivers</h3>
+      <div class="driver-grid">
+        <div class="driver-card">
+          <h4>SQLite</h4>
+          <p>Pure Go via <code>modernc.org/sqlite</code>. No CGo. WAL mode enabled by default.</p>
+          <code>cfg.DatabaseDriver = db.SQLite</code>
+        </div>
+        <div class="driver-card">
+          <h4>PostgreSQL</h4>
+          <p>High-performance via <code>pgx/v5</code>. Production-ready connection pooling.</p>
+          <code>cfg.DatabaseDriver = db.Postgres</code>
+        </div>
+        <div class="driver-card">
+          <h4>MySQL</h4>
+          <p>Via <code>go-sql-driver/mysql</code>. Full UPSERT and transaction support.</p>
+          <code>cfg.DatabaseDriver = db.MySQL</code>
+        </div>
+      </div>
+    </section>
+
+    <!-- WebRTC -->
+    <section id="webrtc">
+      <h2>WebRTC</h2>
+      <p>Mana includes a full SFU-oriented WebRTC stack with offer/answer signaling, ICE candidate exchange, simulcast layer selection, congestion control, and jitter buffering.</p>
+      <pre><code class="lang-go">cfg.EnableRTC = true
+cfg.STUNServers = []string{"stun:stun.l.google.com:19302"}
+cfg.TURNServers = []core.ICEServerConfig{{
+    URLs:       []string{"turn:turn.example.com:3478"},
+    Username:   "user",
+    Credential: "pass",
+}}
+cfg.ICETransportPolicy = "all" // or "relay"
+
+app := mana.New(cfg)
+
+app.OnCallStart(func(e core.CallEvent) {
+    log.Printf("Call started: %s → %s", e.Caller, e.Callee)
+})
+app.OnCallEnd(func(e core.CallEvent) {
+    log.Printf("Call ended in room %s", e.RoomID)
+})</code></pre>
+    </section>
+
+    <!-- E2EE -->
+    <section id="e2ee">
+      <h2>E2EE — End-to-End Encryption</h2>
+      <p>The <code>e2ee</code> package provides X3DH-style key exchange, Curve25519 key generation, HKDF key derivation, and AES-256-GCM authenticated encryption.</p>
+      <pre><code class="lang-go">cfg.EnableE2EE = true
+app := mana.New(cfg)
+
+// Key exchange is managed automatically via signaling
+// Clients register their public keys:
+app.KeyExchange().StorePublicKey("alice", alicePublicKey)
+pub, ok := app.KeyExchange().GetPublicKey("alice")</code></pre>
+    </section>
+
+    <!-- Notifications -->
+    <section id="notifications">
+      <h2>Notifications</h2>
+      <p>The notification hub delivers targeted alerts to specific users across all their connected devices.</p>
+      <pre><code class="lang-go">app.NotificationHub().Send("user-123", core.Notification{
+    Title: "New Message",
+    Body:  "You have a new message from Alice",
+    Data:  map[string]interface{}{"room_id": "chat-room"},
+})</code></pre>
+    </section>
+
+    <!-- Clustering -->
+    <section id="clustering">
+      <h2>Clustering</h2>
+      <p>Scale horizontally with Redis or NATS for multi-node signal fan-out. Each node broadcasts signals to the pub-sub backend, and all subscribed nodes forward them to local peers.</p>
+      <pre><code class="lang-go">// Redis
+cfg.PubSubBackend = "redis"
+cfg.RedisAddr     = "localhost:6379"
+cfg.RedisChannel  = "mana.cluster"
+
+// NATS
+cfg.PubSubBackend = "nats"
+cfg.NATSURL       = "nats://127.0.0.1:4222"
+cfg.NATSSubject   = "mana.cluster"
+
+cfg.ClusterNodeID = "node-1" // unique per instance</code></pre>
+    </section>
+
+    <!-- Observability -->
+    <section id="observability">
+      <h2>Observability</h2>
+      <p>Built-in structured logging, metrics, health checks, and OpenTelemetry tracing.</p>
+      <h3>Endpoints</h3>
+      <div class="config-table-wrap">
+        <table class="config-table">
+          <thead><tr><th>Path</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>GET /health</code></td><td>Health check with room/peer/session counts</td></tr>
+            <tr><td><code>GET /metrics</code></td><td>Prometheus-style metrics (connections, messages, bytes)</td></tr>
+            <tr><td><code>GET /debug/traces</code></td><td>In-memory OpenTelemetry trace inspection</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <pre><code class="lang-go">cfg.EnableTracing    = true
+cfg.TraceSampleRatio = 1.0
+cfg.ServiceName      = "my-chat-app"
+cfg.ServiceVersion   = "1.0.0"</code></pre>
+    </section>
+
+    <!-- Dependency Injection -->
+    <section id="dependency-injection">
+      <h2>Dependency Injection</h2>
+      <p>Override any store with your own implementation using the <code>With*</code> setters:</p>
+      <pre><code class="lang-go">app.WithMessageStore(myCustomStore)
+app.WithAccountStore(myCustomAuth)
+app.WithProfileStore(myCustomProfiles)
+app.WithContactStore(myCustomContacts)
+app.WithDeviceStore(myCustomDevices)
+app.WithPreferenceStore(myCustomPrefs)</code></pre>
+    </section>
+
+    <!-- Shared Transactions -->
+    <section id="shared-transactions">
+      <h2>Shared Transactions</h2>
+      <p>Because Mana can share your <code>*sql.DB</code>, you can run your own business logic and Mana operations inside a single ACID transaction.</p>
+      <pre><code class="lang-go">tx, _ := myDB.BeginTx(ctx, nil)
+
+// 1. Your business logic
+tx.ExecContext(ctx, "UPDATE users SET coins = coins - 10 WHERE id = $1", userID)
+
+// 2. Inject the tx into context so Mana uses it
+txCtx := manadb.WithTx(ctx, tx)
+
+// 3. Mana's insert runs inside YOUR transaction
+app.MessageStore().SaveMessage(txCtx, core.Message{
+    Type:    "receipt",
+    Payload: []byte("You spent 10 coins!"),
+}, []string{userID})
+
+// 4. Commit or rollback — both operations are atomic
+tx.Commit()</code></pre>
+    </section>
+
+    <!-- Examples -->
+    <section id="examples">
+      <h2>Working Examples</h2>
+      <p>Explore production-grade implementations. Each example opens in a dedicated page for deep study.</p>
+      
+      <div class="feature-grid">
+        <a href="docs/examples_full.html" class="feature-card">
+          <div class="feature-icon">📦</div>
+          <h3>examples/full</h3>
+          <p>Full-featured chat server with auth, rooms, messaging, and WebRTC signaling.</p>
+        </a>
+        <a href="docs/examples_custom_db.html" class="feature-card">
+          <div class="feature-icon">🗄️</div>
+          <h3>examples/custom_db</h3>
+          <p>Bring-your-own-database with shared ACID transactions between your app and Mana.</p>
+        </a>
+        <a href="docs/examples_notification.html" class="feature-card">
+          <div class="feature-icon">🔔</div>
+          <h3>examples/notification</h3>
+          <p>Notification hub integration for targeted user alerts.</p>
+        </a>
+        <a href="docs/examples_sfu.html" class="feature-card">
+          <div class="feature-icon">📹</div>
+          <h3>examples/sfu</h3>
+          <p>SFU-based video calling with simulcast and congestion control.</p>
+        </a>
+        <a href="docs/kuruvi_backend.html" class="feature-card">
+          <div class="feature-icon">🐦</div>
+          <h3>kuruvi/</h3>
+          <p>A complete WhatsApp-like messaging app (backend + frontend) built on Mana.</p>
+        </a>
+        <a href="docs/examples_minimal.html" class="feature-card">
+          <div class="feature-icon">🌱</div>
+          <h3>Minimal Start</h3>
+          <p>The absolute shortest path to a functional WebSocket server.</p>
+        </a>
+        <a href="docs/examples_clustering.html" class="feature-card">
+          <div class="feature-icon">🌐</div>
+          <h3>Redis Clustering</h3>
+          <p>Scale horizontally across multiple nodes for millions of users.</p>
+        </a>
+      </div>
+    </section>
+
+    <!-- Component Accessors -->
+    <section id="accessors">
+      <h2>Component Accessors</h2>
+      <p>Access any framework component via the <code>App</code> instance:</p>
+      <div class="config-table-wrap">
+        <table class="config-table">
+          <thead><tr><th>Method</th><th>Returns</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>app.Mux()</code></td><td><code>*http.ServeMux</code></td><td>HTTP router — add your own endpoints</td></tr>
+            <tr><td><code>app.JWTAuth()</code></td><td><code>*auth.JWTAuth</code></td><td>Token generation and validation</td></tr>
+            <tr><td><code>app.RoomManager()</code></td><td><code>*room.Manager</code></td><td>Room lifecycle management</td></tr>
+            <tr><td><code>app.SignalHub()</code></td><td><code>*signaling.Hub</code></td><td>WebSocket signal routing</td></tr>
+            <tr><td><code>app.RTCManager()</code></td><td><code>*rtc.Manager</code></td><td>WebRTC peer connection management</td></tr>
+            <tr><td><code>app.KeyExchange()</code></td><td><code>*e2ee.HandshakeManager</code></td><td>E2EE public key store</td></tr>
+            <tr><td><code>app.MessageStore()</code></td><td><code>core.MessageStore</code></td><td>Message persistence</td></tr>
+            <tr><td><code>app.AccountStore()</code></td><td><code>core.AccountStore</code></td><td>User accounts and auth</td></tr>
+            <tr><td><code>app.ProfileStore()</code></td><td><code>core.ProfileStore</code></td><td>User profiles</td></tr>
+            <tr><td><code>app.ContactStore()</code></td><td><code>core.ContactStore</code></td><td>Contacts and blocking</td></tr>
+            <tr><td><code>app.DBBackend()</code></td><td><code>*db.Backend</code></td><td>Raw database backend access</td></tr>
+            <tr><td><code>app.NotificationHub()</code></td><td><code>*notification.Hub</code></td><td>Push notification delivery</td></tr>
+            <tr><td><code>app.Metrics()</code></td><td><code>*observ.Metrics</code></td><td>Runtime metrics counters</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="doc-footer">
+      <p>Mana Framework · <a href="https://github.com/Aswanidev-vs/mana">GitHub</a> · Built with ♥ in Go</p>
+    </footer>
+  </main>
+</div>
+
+ <script src="script.js"></script>
+</body>
+</html>
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mana — Custom Database Guide</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body class="viewer-layout">
+    <header class="viewer-header">
+        <a href="../index.html#examples" class="btn-back">← Back to Docs</a>
+        <div class="breadcrumbs">
+            <span>Mana</span> <span class="sep">/</span> <span>examples</span> <span class="sep">/</span> <span>custom_db</span> <span class="sep">/</span> <strong>main.go</strong>
+        </div>
+    </header>
+
+    <main class="split-layout">
+        <!-- Left: Documentation -->
+        <section class="guide-column">
+            <h1>Shared Data Sources</h1>
+            <p>A common pain point in framework architecture is managing separate database connections for the framework and your application. Mana solves this by allowing you to <strong>inject your existing pool</strong> into its core engine.</p>
+
+            <h2>1. Single Pool Architecture</h2>
+            <p>Instead of creating two connection pools, you can open your <code>*sql.DB</code> manually (e.g., using GORM or standard <code>sql</code>) and pass it to Mana. This ensures:</p>
+            <ul>
+                <li><strong>ACID Consistency</strong>: You can wrap framework operations (like creating a user) and your own operations (like creating a profile) in a single shared transaction.</li>
+                <li><strong>Resource Efficiency</strong>: No extra connections sitting idle in the database pool.</li>
+            </ul>
+
+            <h2>2. Multiple Driver Support</h2>
+            <p>Mana supports <strong>PostgreSQL, MySQL, and SQLite</strong> out of the box. Use <code>app.WithDatabase()</code> to tell Mana which dialect you are using so it can optimize its internal queries accordingly.</p>
+
+            <h2>3. Raw Backend Access</h2>
+            <p>Even after injection, you can access the framework's internal storage via <code>app.DBBackend()</code> if you need to run raw performance-tuned queries directly on the framework's internal tables.</p>
+        </section>
+
+        <!-- Right: Code -->
+        <section class="code-column">
+            <div class="code-header">
+                <div class="filename">main.go</div>
+            </div>
+            <pre><code class="lang-go">package main
+
+import (
+    "database/sql"
+    "github.com/Aswanidev-vs/mana"
+    "github.com/Aswanidev-vs/mana/storage/db"
+)
+
+func main() {
+    // 1. Open your master database connection manually
+    // This could be shared with GORM or any other ORM.
+    myConn, _ := sql.Open("postgres", "postgres://user:pass@localhost/main_db")
+
+    // 2. Setup Mana with shared pool and dialect
+    app := mana.New(mana.DefaultConfig())
+    
+    // Inject the pool so Mana won't open its own.
+    app.WithDatabase(myConn, db.Postgres)
+
+    // 3. Start the engine
+    log.Fatal(app.Start())
+}</code></pre>
+        </section>
+    </main>
+
+    <script src="../script.js"></script>
+</body>
+</html>

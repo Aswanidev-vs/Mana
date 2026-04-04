@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mana — WebRTC SFU Guide</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body class="viewer-layout">
+    <header class="viewer-header">
+        <a href="../index.html#examples" class="btn-back">← Back to Docs</a>
+        <div class="breadcrumbs">
+            <span>Mana</span> <span class="sep">/</span> <span>examples</span> <span class="sep">/</span> <span>sfu</span> <span class="sep">/</span> <strong>main.go</strong>
+        </div>
+    </header>
+
+    <main class="split-layout">
+        <!-- Left: Documentation -->
+        <section class="guide-column">
+            <h1>WebRTC SFU Signaling</h1>
+            <p>Mana includes a high-performance <strong>Selective Forwarding Unit (SFU)</strong> designed for multi-party video conferencing. It handles media routing, simulcast, and congestion control out of the box.</p>
+
+            <h2>1. Signaling vs. Media</h2>
+            <p>While the Mana core handles the <strong>Signaling</strong> (SDP/ICE exchange via WebSockets), the SFU sits inside the <code>rtc.Manager</code> to route the actual audio/video tracks between peers. This approach ensures low latency and high scalability.</p>
+
+            <h2>2. The RTC Hook</h2>
+            <p>You can listen for RTC lifecycle events using <code>app.OnCallStart()</code>. This is useful for:</p>
+            <ul>
+                <li><strong>Permissions</strong>: Checking if a user is allowed to join a specific call.</li>
+                <li><strong>Recording</strong>: Triggering cloud recording services for a room.</li>
+                <li><strong>Logistics</strong>: Tracking call duration and participants.</li>
+            </ul>
+
+            <h2>3. Performance</h2>
+            <p>By enabling <code>EnableRTC</code>, Mana automatically optimizes the thread pool for high-concurrency UDP traffic, which is critical for real-time media delivery.</p>
+        </section>
+
+        <!-- Right: Code -->
+        <section class="code-column">
+            <div class="code-header">
+                <div class="filename">main.go</div>
+            </div>
+            <pre><code class="lang-go">package main
+
+import (
+    "log"
+    "fmt"
+    "github.com/Aswanidev-vs/mana"
+    "github.com/Aswanidev-vs/mana/core"
+)
+
+func main() {
+    // 1. Initialize with RTC Enabled
+    cfg := mana.DefaultConfig()
+    cfg.EnableRTC = true
+    
+    app := mana.New(cfg)
+    
+    // 2. SFU handles media routing automatically.
+    // The OnCallStart hook triggers when a peer offers a session.
+    app.OnCallStart(func(e core.CallEvent) {
+        fmt.Printf("WebRTC Signaling Hub: Call initiated in Room %s", e.RoomID)
+        // Handlers for SDP/ICE exchange are internal to RTCManager.
+    })
+
+    // 3. Start the engine
+    log.Fatal(app.Start())
+}</code></pre>
+        </section>
+    </main>
+
+    <script src="../script.js"></script>
+</body>
+</html>

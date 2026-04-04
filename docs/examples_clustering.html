@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mana — Redis Clustering Guide</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body class="viewer-layout">
+    <header class="viewer-header">
+        <a href="../index.html#examples" class="btn-back">← Back to Docs</a>
+        <div class="breadcrumbs">
+            <span>Mana</span> <span class="sep">/</span> <span>examples</span> <span class="sep">/</span> <span>clustering</span> <span class="sep">/</span> <strong>main.go</strong>
+        </div>
+    </header>
+
+    <main class="split-layout">
+        <!-- Left: Documentation -->
+        <section class="guide-column">
+            <h1>Horizontal Scaling with Redis</h1>
+            <p>Mana uses a <strong>PubSub-based message backbone</strong> to synchronize rooms across multiple server nodes. This allows your application to scale from a single core to a globally distributed cluster with millions of concurrent users.</p>
+
+            <h2>1. Choose Your Backend</h2>
+            <p>By default, Mana uses a high-performance <strong>In-Memory Hub</strong> for a single server. To scale, you can swap to:</p>
+            <ul>
+                <li><strong>Redis</strong>: The industry standard for distributed PubSub.</li>
+                <li><strong>NATS</strong>: For high-throughput, low-latency clustering.</li>
+            </ul>
+
+            <h2>2. The Shared Hub</h2>
+            <p>Mana synchronizes room states (who is connected, what messages were sent) across all nodes. When a message is sent to <code>Node A</code>, Mana automatically broadcasts it via Redis so users on <code>Node B</code> receive it instantly.</p>
+
+            <h2>3. Load Balancing</h2>
+            <p>With clustering enabled, you can place a standard load balancer (like Nginx or AWS ALB) in front of your Mana nodes. Sticky sessions are <strong>not required</strong> because Mana's architecture is stateless from the user's perspective.</p>
+        </section>
+
+        <!-- Right: Code -->
+        <section class="code-column">
+            <div class="code-header">
+                <div class="filename">main.go</div>
+            </div>
+            <pre><code class="lang-go">package main
+
+import (
+    "log"
+    "github.com/Aswanidev-vs/mana"
+)
+
+func main() {
+    cfg := mana.DefaultConfig()
+    
+    // 1. Enable Redis PubSub for scaling.
+    cfg.PubSubBackend = "redis"
+    cfg.RedisAddr     = "localhost:6379"
+    
+    // 2. Assign unique Node ID for monitoring.
+    cfg.ClusterNodeID = "node-alpha"
+    
+    app := mana.New(cfg)
+    
+    // 3. Start the engine
+    log.Printf("Clustered node %s starting...", cfg.ClusterNodeID)
+    log.Fatal(app.Start())
+}</code></pre>
+        </section>
+    </main>
+
+    <script src="../script.js"></script>
+</body>
+</html>

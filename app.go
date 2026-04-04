@@ -261,6 +261,7 @@ func (a *App) ContactStore() core.ContactStore { return a.contact }
 func (a *App) DeviceStore() core.DeviceStore   { return a.device }
 func (a *App) PreferenceStore() core.PreferenceStore { return a.prefs }
 func (a *App) DBBackend() *db.Backend { return a.backend }
+func (a *App) ProductStore() *product.Store { return a.product }
 
 // --- Dependency Injection & Database Setters ---
 

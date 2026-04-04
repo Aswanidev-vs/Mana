@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mana — Kuruvi Architecture</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body class="viewer-layout">
+    <header class="viewer-header">
+        <a href="../index.html#examples" class="btn-back">← Back to Docs</a>
+        <div class="breadcrumbs">
+            <span>Mana</span> <span class="sep">/</span> <span>kuruvi</span> <span class="sep">/</span> <span>backend</span> <span class="sep">/</span> <strong>main.go</strong>
+        </div>
+    </header>
+
+    <main class="split-layout">
+        <!-- Left: Documentation -->
+        <section class="guide-column">
+            <h1>Kuruvi Messenger Architecture</h1>
+            <p><strong>Kuruvi</strong> is a reference implementation of a global real-time messenger built on Mana. It showcases how to assemble multiple framework stores into a cohesive production-grade application.</p>
+
+            <h2>1. User & Account Stores</h2>
+            <p>Kuruvi utilizes Mana's <code>AccountStore</code> for credentials and <code>ProfileStore</code> for user metadata (avatars, status, etc.). These are decoupled to allow for high-performance user lookups without loading sensitive auth data.</p>
+
+            <h2>2. Message Lifecycle</h2>
+            <p>The messaging lifecycle in Kuruvi involves:</p>
+            <ul>
+                <li><strong>Ingestion</strong>: Receiving a message via the <code>SignalHub</code>.</li>
+                <li><strong>Persistence</strong>: Auto-writing to the <code>MessageStore</code> (SQLite/Postgres).</li>
+                <li><strong>Broadcast</strong>: Routing to the recipient's active devices using the <code>RoomManager</code> and <code>NotificationHub</code> for background alerts.</li>
+            </ul>
+
+            <h2>3. End-to-End Encryption (E2EE)</h2>
+            <p>Kuruvi leverages the <code>KeyExchange</code> hub in Mana to store and distribute public keys for E2EE messaging, ensuring that only the sender and receiver can decrypt the message payload.</p>
+        </section>
+
+        <!-- Right: Code -->
+        <section class="code-column">
+            <div class="code-header">
+                <div class="filename">main.go</div>
+            </div>
+            <pre><code class="lang-go">package main
+
+import (
+    "github.com/Aswanidev-vs/mana"
+    "github.com/Aswanidev-vs/mana/core"
+)
+
+func main() {
+    // 1. Kuruvi uses production-grade stores
+    app := mana.New(mana.DefaultConfig())
+    
+    // Auto-wiring of Account/Profile/Message stores
+    accounts := app.AccountStore()
+    messages := app.MessageStore()
+
+    // 2. Custom hooks for post-persistence business logic
+    app.OnMessageStored(func(ctx context.Context, msg core.Message) {
+        // Trigger push alerts, analytics, or sync
+    })
+
+    // 3. Start the engine
+    log.Fatal(app.Start())
+}</code></pre>
+        </section>
+    </main>
+
+    <script src="../script.js"></script>
+</body>
+</html>

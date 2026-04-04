@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mana — Full App Guide</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body class="viewer-layout">
+    <header class="viewer-header">
+        <a href="../index.html#examples" class="btn-back">← Back to Docs</a>
+        <div class="breadcrumbs">
+            <span>Mana</span> <span class="sep">/</span> <span>examples</span> <span class="sep">/</span> <span>full</span> <span class="sep">/</span> <strong>main.go</strong>
+        </div>
+    </header>
+
+    <main class="split-layout">
+        <!-- Left: Documentation -->
+        <section class="guide-column">
+            <h1>Full Stack Implementation</h1>
+            <p>The <code>full</code> example demonstrates a production-ready RTC server utilizing Mana's "Batteries Included" philosophy. It combines authentication, WebRTC signaling, and database persistence into a single unified instance.</p>
+
+            <h2>1. Configuration</h2>
+            <p>We start by initializing <code>core.DefaultConfig()</code>. This provides sensible defaults for performance and security. In this example, we explicitly enable:</p>
+            <ul>
+                <li><strong>EnableRTC</strong>: Activates the WebRTC signaling hub.</li>
+                <li><strong>EnableAuth</strong>: Enforces JWT-based authentication for all connections.</li>
+                <li><strong>DatabaseDriver</strong>: Sets up SQLite for persistent message and user storage.</li>
+            </ul>
+
+            <h2>2. The Message Hook</h2>
+            <p>Mana uses an event-driven architecture. The <code>app.OnMessage()</code> hook allows you to intercept every message passing through the system. This is where you implement custom logic like:</p>
+            <ul>
+                <li><strong>Logging & Analytics</strong>: Tracking message volume.</li>
+                <li><strong>Modertion</strong>: Filtering content in real-time.</li>
+                <li><strong>Side Effects</strong>: Triggering external APIs when certain keywords are sent.</li>
+            </ul>
+
+            <h2>3. Scaling the App</h2>
+            <p>While this example uses SQLite for simplicity, you can swap the <code>DatabaseDriver</code> to <code>postgres</code> or <code>mysql</code> simply by changing the config and providing a DSN. The business logic remains identical.</p>
+        </section>
+
+        <!-- Right: Code -->
+        <section class="code-column">
+            <div class="code-header">
+                <div class="filename">main.go</div>
+            </div>
+            <pre><code class="lang-go">package main
+
+import (
+    "log"
+    "github.com/Aswanidev-vs/mana"
+    "github.com/Aswanidev-vs/mana/core"
+)
+
+func main() {
+    // 1. Initialize with all batteries included
+    // Mana handles everything from DB migration to WebSocket handshakes.
+    cfg := core.DefaultConfig()
+    cfg.EnableRTC = true
+    cfg.EnableAuth = true
+    cfg.DatabaseDriver = "sqlite"
+    cfg.DatabaseDSN = "full_example.db"
+
+    app := mana.New(cfg)
+
+    // 2. Custom application logic
+    // React to messages globally across all rooms.
+    app.OnMessage(func(msg core.Message) {
+        log.Printf("Message in Room %s: %s", msg.RoomID, string(msg.Payload))
+    })
+
+    // 3. Start the engine
+    log.Printf("Mana server starting on %d...", cfg.Port)
+    if err := app.Start(); err != nil {
+        log.Fatal(err)
+    }
+}</code></pre>
+        </section>
+    </main>
+
+    <script src="../script.js"></script>
+</body>
+</html>

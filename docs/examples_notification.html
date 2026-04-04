@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mana — Notifications Guide</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body class="viewer-layout">
+    <header class="viewer-header">
+        <a href="../index.html#examples" class="btn-back">← Back to Docs</a>
+        <div class="breadcrumbs">
+            <span>Mana</span> <span class="sep">/</span> <span>examples</span> <span class="sep">/</span> <span>notification</span> <span class="sep">/</span> <strong>main.go</strong>
+        </div>
+    </header>
+
+    <main class="split-layout">
+        <!-- Left: Documentation -->
+        <section class="guide-column">
+            <h1>Notification Hub Implementation</h1>
+            <p>Mana provides a centralized hub to deliver push notifications across the platform. This is managed by the <code>NotificationHub</code>, which ensures delivery to every connected device for a specific user.</p>
+
+            <h2>1. Targeted Delivery</h2>
+            <p>You can send notifications to specific users by their <code>UserID</code>. Mana internally tracks which WebSocket connections belong to which user and routes the data accordingly.</p>
+
+            <h2>2. Custom Data Payloads</h2>
+            <p>Every notification can include a <code>core.Notification</code> object. This includes:</p>
+            <ul>
+                <li><strong>Title & Body</strong>: Standard user-facing content.</li>
+                <li><strong>Data (JSON)</strong>: Custom metadata to trigger client-side actions (e.g., navigating to a specific room, vibrating the device).</li>
+            </ul>
+
+            <h2>3. Cross-Platform Handlers</h2>
+            <p>The Mana frontend libraries (Go, JS, Flutter) provide hooks to react to these notifications, allowing you to show UI toasts or system-level popups instantly.</p>
+        </section>
+
+        <!-- Right: Code -->
+        <section class="code-column">
+            <div class="code-header">
+                <div class="filename">main.go</div>
+            </div>
+            <pre><code class="lang-go">package main
+
+import (
+    "github.com/Aswanidev-vs/mana"
+    "github.com/Aswanidev-vs/mana/core"
+)
+
+func main() {
+    app := mana.New(mana.DefaultConfig())
+
+    // 1. Trigger a cross-platform notification.
+    // The Hub delivers this to alice-456 on all devices.
+    app.NotificationHub().Send(ctx, "alice-456", core.Notification{
+        Title: "New Friend Request",
+        Body:  "Bob wants to connect with you.",
+        Data:  map[string]interface{}{"user_id": "bob-123", "action": "view_profile"},
+    })
+
+    // 2. Lifecycle
+    app.Start()
+}</code></pre>
+        </section>
+    </main>
+
+    <script src="../script.js"></script>
+</body>
+</html>

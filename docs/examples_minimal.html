@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mana — Quick Start Guide</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body class="viewer-layout">
+    <header class="viewer-header">
+        <a href="../index.html#examples" class="btn-back">← Back to Docs</a>
+        <div class="breadcrumbs">
+            <span>Mana</span> <span class="sep">/</span> <span>examples</span> <span class="sep">/</span> <strong>main.go</strong>
+        </div>
+    </header>
+
+    <main class="split-layout">
+        <!-- Left: Documentation -->
+        <section class="guide-column">
+            <h1>Zero-Config Protocol</h1>
+            <p>Mana is designed for developers who want to prioritize speed. The <code>minimal</code> setup illustrates exactly how much power is available with just **three lines of code**.</p>
+
+            <h2>1. Default Config</h2>
+            <p>By calling <code>mana.DefaultConfig()</code>, the framework automatically configures:</p>
+            <ul>
+                <li><strong>Local SQLite</strong>: For persistent message storage without a server.</li>
+                <li><strong>Auto-Migrations</strong>: Creating all necessary tables on startup.</li>
+                <li><strong>WebSocket Mux</strong>: Setting up the <code>/ws</code> signaling endpoint.</li>
+            </ul>
+
+            <h2>2. The New Engine</h2>
+            <p>Every Mana application starts with <code>app := mana.New(cfg)</code>. This instance acts as your command center, orchestrating the <code>SignalHub</code>, <code>RoomManager</code>, and <code>AuthService</code>.</p>
+
+            <h2>3. Starting the Server</h2>
+            <p>Calling <code>app.Start()</code> launches the high-performance HTTP/WebSocket server. It is built on standard <code>net/http</code>, making it compatible with existing Go middleware like CORS or Logging.</p>
+        </section>
+
+        <!-- Right: Code -->
+        <section class="code-column">
+            <div class="code-header">
+                <div class="filename">main.go</div>
+            </div>
+            <pre><code class="lang-go">package main
+
+import (
+    "log"
+    "github.com/Aswanidev-vs/mana"
+)
+
+func main() {
+    // 1. Minimum viable functional RTC server.
+    // Zero-config enables auto-persistent storage.
+    app := mana.New(mana.DefaultConfig())
+    
+    // 2. Start the engine on port 8080 (default)
+    log.Fatal(app.Start())
+}</code></pre>
+        </section>
+    </main>
+
+    <script src="../script.js"></script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"database/sql"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,67 +11,12 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	mana "github.com/Aswanidev-vs/mana"
 	"github.com/Aswanidev-vs/mana/auth"
 	"github.com/Aswanidev-vs/mana/core"
 	"github.com/Aswanidev-vs/mana/product"
-	"golang.org/x/crypto/bcrypt"
+	"github.com/Aswanidev-vs/mana/storage/db"
 )
-
-// AuthStore handles persistent user credentials with SQLite
-type AuthStore struct {
-	db *sql.DB
-}
-
-func NewAuthStore(db *sql.DB) (*AuthStore, error) {
-	_, err := db.Exec(`
-		PRAGMA journal_mode=WAL;
-		CREATE TABLE IF NOT EXISTS users (
-			username TEXT PRIMARY KEY,
-			password_hash TEXT NOT NULL,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		)
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("create users table: %w", err)
-	}
-	return &AuthStore{db: db}, nil
-}
-
-func (s *AuthStore) Register(username, password string) error {
-	if username == "" || password == "" {
-		return fmt.Errorf("username and password required")
-	}
-
-	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return err
-	}
-
-	_, err = s.db.Exec("INSERT INTO users (username, password_hash) VALUES (?, ?)", username, string(hashed))
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			return fmt.Errorf("user already exists")
-		}
-		return err
-	}
-	return nil
-}
-
-func (s *AuthStore) Login(username, password string) error {
-	var hashed string
-	err := s.db.QueryRow("SELECT password_hash FROM users WHERE username = ?", username).Scan(&hashed)
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("invalid credentials")
-	}
-	if err != nil {
-		return err
-	}
-
-	return bcrypt.CompareHashAndPassword([]byte(hashed), []byte(password))
-}
 
 func main() {
 	// 1. Configuration
@@ -84,28 +29,31 @@ func main() {
 	cfg.JWTSecret = "kuruvi-secure-secret-key-32bytes-min"
 	cfg.JWTIssuer = "kuruvi-messenger"
 	cfg.AllowedOrigins = []string{"*"}
-	cfg.MessageStorePath = "data/kuruvi.db"
 	cfg.ProductStorePath = "data/product.json"
 	cfg.AttachmentDir = "data/attachments"
 
+	// Plug-and-play database: point the framework at our SQLite file.
+	// The framework will auto-create all tables (accounts, messages, profiles, etc.)
+	cfg.DatabaseDriver = db.SQLite
+	cfg.DatabaseDSN = "data/kuruvi.db"
+
 	// Create data directories
 	os.MkdirAll("data/attachments", 0755)
+	os.MkdirAll("data", 0755)
 
-	// Initialize SQLite Database
-	db, err := sql.Open("sqlite", cfg.MessageStorePath)
-	if err != nil {
-		log.Fatalf("Failed to open sqlite: %v", err)
-	}
-	defer db.Close()
-
-	authStore, err := NewAuthStore(db)
-	if err != nil {
-		log.Fatalf("Failed to initialize auth store: %v", err)
-	}
-
+	// 2. Spin up Mana — DatabaseDSN causes the framework to initialize
+	//    AccountStore, MessageStore, ProfileStore, ContactStore automatically.
 	app := mana.New(cfg)
 	mux := app.Mux()
 	productStore := app.ProductStore()
+
+	// Verify stores were wired up properly
+	if app.AccountStore() == nil {
+		log.Fatal("AccountStore is nil — check DatabaseDSN config")
+	}
+	if app.MessageStore() == nil {
+		log.Fatal("MessageStore is nil — check DatabaseDSN config")
+	}
 
 	// Helper for CORS
 	cors := func(h http.HandlerFunc) http.HandlerFunc {
@@ -121,7 +69,7 @@ func main() {
 		}
 	}
 
-	// 2. Auth Implementation
+	// 3. Auth — Register
 	mux.HandleFunc("/api/auth/register", cors(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -136,39 +84,61 @@ func main() {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
 		}
-
-		log.Printf("[Auth] Register attempt for user: %s", req.Username)
-		if err := authStore.Register(req.Username, req.Password); err != nil {
-			log.Printf("[Auth] Register failed for %s: %v", req.Username, err)
-			status := http.StatusInternalServerError
-			if err.Error() == "user already exists" {
-				status = http.StatusConflict
-			} else if err.Error() == "username and password required" {
-				status = http.StatusBadRequest
-			}
-			http.Error(w, err.Error(), status)
+		if req.Username == "" || req.Password == "" {
+			http.Error(w, "username and password required", http.StatusBadRequest)
 			return
 		}
 
-		_ = productStore.UpsertProfile(product.Profile{
-			UserID:      req.Username,
-			DisplayName: req.Username,
-			Status:      "Hey there! I am using Kuruvi.",
-		})
+		log.Printf("[Auth] Register attempt for user: %s", req.Username)
 
-		token, err := app.JWTAuth().GenerateToken(req.Username, req.Username, auth.RoleUser)
+		ctx := r.Context()
+		if err := app.AccountStore().CreateUser(ctx, req.Username, req.Password); err != nil {
+			log.Printf("[Auth] Register failed for %s: %v", req.Username, err)
+			status := http.StatusInternalServerError
+			errMsg := err.Error()
+			// Detect duplicate key across SQLite / Postgres / MySQL
+			if strings.Contains(errMsg, "UNIQUE") || strings.Contains(errMsg, "unique") ||
+				strings.Contains(errMsg, "duplicate") || strings.Contains(errMsg, "Duplicate") {
+				status = http.StatusConflict
+				errMsg = "user already exists"
+			}
+			http.Error(w, errMsg, status)
+			return
+		}
+
+		// The framework's SQLAccountStore prefixes user IDs with "u-"
+		userID := fmt.Sprintf("u-%s", req.Username)
+
+		// Upsert profile in both stores (framework profile + product store)
+		if app.ProfileStore() != nil {
+			_ = app.ProfileStore().UpsertProfile(ctx, core.UserProfile{
+				UserID:      userID,
+				DisplayName: req.Username,
+				UpdatedAt:   time.Now(),
+			})
+		}
+		if productStore != nil {
+			_ = productStore.UpsertProfile(product.Profile{
+				UserID:      req.Username,
+				DisplayName: req.Username,
+				Status:      "Hey there! I am using Kuruvi.",
+			})
+		}
+
+		token, err := app.JWTAuth().GenerateToken(userID, req.Username, auth.RoleUser)
 		if err != nil {
 			log.Printf("[Auth] Token generation failed: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 
-		log.Printf("[Auth] Register success: %s", req.Username)
+		log.Printf("[Auth] Register success: %s (id: %s)", req.Username, userID)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]string{"token": token, "username": req.Username})
 	}))
 
+	// 4. Auth — Login
 	mux.HandleFunc("/api/auth/login", cors(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -185,25 +155,28 @@ func main() {
 		}
 
 		log.Printf("[Auth] Login attempt for user: %s", req.Username)
-		if err := authStore.Login(req.Username, req.Password); err != nil {
+
+		ctx := r.Context()
+		userID, err := app.AccountStore().Authenticate(ctx, req.Username, req.Password)
+		if err != nil {
 			log.Printf("[Auth] Login failed for %s: %v", req.Username, err)
 			http.Error(w, "Invalid credentials", http.StatusUnauthorized)
 			return
 		}
 
-		token, err := app.JWTAuth().GenerateToken(req.Username, req.Username, auth.RoleUser)
+		token, err := app.JWTAuth().GenerateToken(userID, req.Username, auth.RoleUser)
 		if err != nil {
 			log.Printf("[Auth] Token generation failed: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 
-		log.Printf("[Auth] Login success: %s", req.Username)
+		log.Printf("[Auth] Login success: %s (id: %s)", req.Username, userID)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"token": token, "username": req.Username})
 	}))
 
-	// 3. Static Files & Frontend SPA Routing
+	// 5. Static Files & Frontend SPA Routing
 	frontendPath := "../frontend"
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -224,7 +197,7 @@ func main() {
 		http.ServeFile(w, r, fullPath)
 	})
 
-	// 4. E2EE Public Key Exchange API
+	// 6. E2EE Public Key Exchange API
 	keyExchange := app.KeyExchange()
 	mux.HandleFunc("/api/e2ee/pubkey", func(w http.ResponseWriter, r *http.Request) {
 		userID := r.URL.Query().Get("user_id")
@@ -257,11 +230,13 @@ func main() {
 		}
 	})
 
-	// 5. Contacts API - list online users from product store recent devices
+	// 7. Contacts API — list recently active users from the product store
 	mux.HandleFunc("/api/contacts", func(w http.ResponseWriter, r *http.Request) {
 		data, err := os.ReadFile(cfg.ProductStorePath)
 		if err != nil {
-			http.Error(w, "store read error", http.StatusInternalServerError)
+			// Product store hasn't been written yet — return empty list
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]interface{}{})
 			return
 		}
 		var snap product.Snapshot
@@ -278,11 +253,14 @@ func main() {
 		tokenStr := auth.ExtractTokenFromQuery(r)
 		if tokenStr != "" && app.JWTAuth() != nil {
 			claims, _ := app.JWTAuth().ValidateToken(tokenStr)
-			selfUserID = claims.UserID
+			if claims != nil {
+				selfUserID = claims.UserID
+			}
 		}
 
 		for userID, devices := range snap.Devices {
-			if userID == selfUserID {
+			// Compare against both the raw username and the prefixed userID
+			if userID == selfUserID || "u-"+userID == selfUserID {
 				continue
 			}
 			lastSeen := time.Time{}
@@ -314,19 +292,45 @@ func main() {
 		json.NewEncoder(w).Encode(contacts)
 	})
 
-	// 6. Presence & Message Logging
+	// 8. Presence & Message Logging hooks
 	app.OnUserJoin(func(roomID string, user core.User) {
 		log.Printf("[Presence] %s (id:%s) joined room '%s'", user.Username, user.ID, roomID)
 	})
 
 	app.OnMessage(func(msg core.Message) {
-		log.Printf("[Message stored] ID:%s from %s to target:%s room:%s payload len:%d", msg.ID, msg.SenderID, msg.TargetID, msg.RoomID, len(msg.Payload))
+		log.Printf("[Message stored] ID:%s from %s to target:%s room:%s payload len:%d",
+			msg.ID, msg.SenderID, msg.TargetID, msg.RoomID, len(msg.Payload))
 	})
 
-	// Start Server
+	// 9. Start Server
 	log.Printf("Kuruvi backend starting on http://%s:%d", cfg.Host, cfg.Port)
+	log.Printf("Database: SQLite @ %s (driver managed by Mana framework)", cfg.DatabaseDSN)
 	if err := app.StartWithGracefulShutdown(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
-
 }
+
+// resolveUserContext extracts token claims from authorization header or query param.
+func resolveUserContext(r *http.Request, jwtAuth *auth.JWTAuth) (userID, username string) {
+	if jwtAuth == nil {
+		return "", ""
+	}
+	tokenStr := auth.ExtractTokenFromQuery(r)
+	if tokenStr == "" {
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			tokenStr = strings.TrimPrefix(authHeader, "Bearer ")
+		}
+	}
+	if tokenStr == "" {
+		return "", ""
+	}
+	claims, err := jwtAuth.ValidateToken(tokenStr)
+	if err != nil || claims == nil {
+		return "", ""
+	}
+	return claims.UserID, claims.Username
+}
+
+// Ensure context is used (resolveUserContext is a helper available for future endpoints)
+var _ = context.Background
