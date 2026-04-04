@@ -19,13 +19,16 @@ type Room struct {
 	userSessionCount map[string]int
 }
 
-// NewRoom creates a new room with the given ID and name.
-func NewRoom(id, name string) *Room {
+// NewRoom creates a new room with the given metadata.
+func NewRoom(id, name, roomType, ownerID string) *Room {
 	return &Room{
 		info: core.RoomInfo{
-			ID:      id,
-			Name:    name,
-			Members: make([]core.User, 0),
+			ID:        id,
+			Name:      name,
+			Type:      roomType,
+			OwnerID:   ownerID,
+			CreatedAt: time.Now(),
+			Members:   make([]core.User, 0),
 		},
 		members:          make(map[string]ws.Conn),
 		sessionUsers:     make(map[string]core.User),
@@ -166,12 +169,12 @@ func NewManager() *Manager {
 	}
 }
 
-// Create creates a new room.
-func (m *Manager) Create(id, name string) *Room {
+// Create creates a new room with metadata.
+func (m *Manager) Create(id, name, roomType, ownerID string) *Room {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	room := NewRoom(id, name)
+ 
+	room := NewRoom(id, name, roomType, ownerID)
 	m.rooms[id] = room
 	return room
 }
@@ -205,7 +208,7 @@ func (m *Manager) JoinSession(roomID, sessionID string, user core.User, conn ws.
 	m.mu.Lock()
 	room, ok := m.rooms[roomID]
 	if !ok {
-		room = NewRoom(roomID, roomID)
+		room = NewRoom(roomID, roomID, "group", user.ID)
 		m.rooms[roomID] = room
 	}
 	m.mu.Unlock()
@@ -230,9 +233,12 @@ func (m *Manager) List() []core.RoomInfo {
 	infos := make([]core.RoomInfo, 0, len(m.rooms))
 	for _, r := range m.rooms {
 		infos = append(infos, core.RoomInfo{
-			ID:      r.info.ID,
-			Name:    r.info.Name,
-			Members: r.Members(),
+			ID:        r.info.ID,
+			Name:      r.info.Name,
+			Type:      r.info.Type,
+			OwnerID:   r.info.OwnerID,
+			CreatedAt: r.info.CreatedAt,
+			Members:   r.Members(),
 		})
 	}
 	return infos

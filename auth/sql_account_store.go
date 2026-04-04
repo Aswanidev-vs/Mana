@@ -43,7 +43,7 @@ func initializeAccountTables(dbConn *sql.DB, driver string, prefix string) error
 			user_id TEXT PRIMARY KEY,
 			username TEXT UNIQUE,
 			password_hash TEXT,
-			created_at DATETIMEDEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)
 	`, prefix)
 
@@ -68,6 +68,23 @@ func (s *SQLAccountStore) CreateUser(ctx context.Context, username, password str
 	return err
 }
 
+func (s *SQLAccountStore) CreateUserWithContact(ctx context.Context, username, password, phone, email string) error {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+
+	userID := fmt.Sprintf("u-%s", username)
+	query := fmt.Sprintf("INSERT INTO %saccounts (user_id, username, password_hash, phone, email) VALUES (?, ?, ?, ?, ?)", s.prefix)
+	
+	if s.backend.Driver == db.Postgres {
+		query = fmt.Sprintf("INSERT INTO %saccounts (user_id, username, password_hash, phone, email) VALUES ($1, $2, $3, $4, $5)", s.prefix)
+	}
+
+	_, err = s.conn(ctx).ExecContext(ctx, query, userID, username, string(hash), phone, email)
+	return err
+}
+
 func (s *SQLAccountStore) Authenticate(ctx context.Context, username, password string) (string, error) {
 	query := fmt.Sprintf("SELECT user_id, password_hash FROM %saccounts WHERE username = ?", s.prefix)
 	if s.backend.Driver == db.Postgres {
@@ -77,6 +94,51 @@ func (s *SQLAccountStore) Authenticate(ctx context.Context, username, password s
 	var userID, hash string
 	err := s.conn(ctx).QueryRowContext(ctx, query, username).Scan(&userID, &hash)
 	if err != nil {
+		return "", err
+	}
+
+	err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	if err != nil {
+		return "", fmt.Errorf("invalid password")
+	}
+
+	return userID, nil
+}
+
+func (s *SQLAccountStore) AuthenticateByPhone(ctx context.Context, phone, password string) (string, error) {
+	query := fmt.Sprintf("SELECT user_id, password_hash FROM %saccounts WHERE phone = ?", s.prefix)
+	if s.backend.Driver == db.Postgres {
+		query = fmt.Sprintf("SELECT user_id, password_hash FROM %saccounts WHERE phone = $1", s.prefix)
+	}
+
+	var userID, hash string
+	err := s.conn(ctx).QueryRowContext(ctx, query, phone).Scan(&userID, &hash)
+	if err != nil {
+		return "", err
+	}
+
+	err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	if err != nil {
+		return "", fmt.Errorf("invalid password")
+	}
+
+	return userID, nil
+}
+
+func (s *SQLAccountStore) AuthenticateByEmail(ctx context.Context, email, password string) (string, error) {
+	query := fmt.Sprintf("SELECT user_id, password_hash FROM %saccounts WHERE email = ?", s.prefix)
+	if s.backend.Driver == db.Postgres {
+		query = fmt.Sprintf("SELECT user_id, password_hash FROM %saccounts WHERE email = $1", s.prefix)
+	}
+
+	var userID, hash string
+	err := s.conn(ctx).QueryRowContext(ctx, query, email).Scan(&userID, &hash)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			fmt.Printf("[SQLAccountStore] No account found for email: %s\n", email)
+		} else {
+			fmt.Printf("[SQLAccountStore] Email lookup error for %s: %v\n", email, err)
+		}
 		return "", err
 	}
 

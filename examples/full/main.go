@@ -14,7 +14,6 @@ import (
 	mana "github.com/Aswanidev-vs/mana"
 	"github.com/Aswanidev-vs/mana/auth"
 	"github.com/Aswanidev-vs/mana/core"
-	"github.com/Aswanidev-vs/mana/e2ee"
 )
 
 func main() {
@@ -222,8 +221,8 @@ func main() {
 	})
 
 	// --- E2EE public-key endpoints ---
-	keyExchange := app.KeyExchange()
-	if keyExchange != nil {
+	e2eeStore := app.E2EEStore()
+	if e2eeStore != nil {
 		mux.HandleFunc("/api/e2ee/pubkey", func(w http.ResponseWriter, r *http.Request) {
 			peerID := r.URL.Query().Get("peer_id")
 			if peerID == "" {
@@ -232,8 +231,8 @@ func main() {
 			}
 			switch r.Method {
 			case http.MethodGet:
-				pub, ok := keyExchange.GetPublicKey(peerID)
-				if !ok {
+				pub, err := e2eeStore.LoadIdentityPublicKey(r.Context(), peerID)
+				if err != nil || pub == nil {
 					http.Error(w, "not found", http.StatusNotFound)
 					return
 				}
@@ -246,7 +245,7 @@ func main() {
 					http.Error(w, "bad json", http.StatusBadRequest)
 					return
 				}
-				keyExchange.StorePublicKey(peerID, body.PublicKey)
+				e2eeStore.SaveIdentityPublicKey(r.Context(), peerID, body.PublicKey)
 				w.WriteHeader(http.StatusCreated)
 			default:
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -326,20 +325,8 @@ func main() {
 	// 4. E2EE demo: generate a test key pair so the /ws key_exchange
 	//    flow works out of the box for the demo client
 	// ================================================================
-	if keyExchange != nil {
-		// Pre-register demo peer public keys so the E2EE handshake demo works
-		genDemoKeys := func(peerID string) {
-			kx := e2ee.NewX25519KeyExchange()
-			kp, err := kx.GenerateKeyPair(peerID)
-			if err != nil {
-				log.Printf("E2EE demo key gen failed for %s: %v", peerID, err)
-				return
-			}
-			keyExchange.StorePublicKey(peerID, kp.PublicKey)
-		}
-		genDemoKeys("demo-alice")
-		genDemoKeys("demo-bob")
-		log.Println("E2EE demo keys registered for demo-alice and demo-bob")
+	if e2eeStore != nil {
+		log.Println("E2EE SQL-backed key store enabled")
 	}
 
 	// ================================================================

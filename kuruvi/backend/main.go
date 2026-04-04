@@ -2,34 +2,44 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/joho/godotenv"
+	"github.com/wneessen/go-mail"
+	"golang.org/x/crypto/bcrypt"
+
 	mana "github.com/Aswanidev-vs/mana"
 	"github.com/Aswanidev-vs/mana/auth"
 	"github.com/Aswanidev-vs/mana/core"
 	"github.com/Aswanidev-vs/mana/product"
 	"github.com/Aswanidev-vs/mana/storage/db"
+	_ "modernc.org/sqlite"
 )
 
 func main() {
+	// Load .env explicitly for Kuruvi configurations (like SMTP)
+	_ = godotenv.Load()
+
 	// 1. Configuration
 	cfg := core.DefaultConfig()
 	cfg.Port = 8080
-	cfg.Host = "0.0.0.0"
+	cfg.Host = "localhost"
 	cfg.EnableRTC = true
 	cfg.EnableE2EE = true
 	cfg.EnableAuth = true
 	cfg.JWTSecret = "kuruvi-secure-secret-key-32bytes-min"
 	cfg.JWTIssuer = "kuruvi-messenger"
 	cfg.AllowedOrigins = []string{"*"}
-	cfg.ProductStorePath = "data/product.json"
+	// cfg.ProductStorePath = "data/product.json" // Commented out to avoid nil product store panic
 	cfg.AttachmentDir = "data/attachments"
 
 	// Plug-and-play database: point the framework at our SQLite file.
@@ -41,11 +51,54 @@ func main() {
 	os.MkdirAll("data/attachments", 0755)
 	os.MkdirAll("data", 0755)
 
+	// Ensure product store file exists with proper structure to avoid nil pointer in framework
+	if _, err := os.Stat(cfg.ProductStorePath); os.IsNotExist(err) {
+		os.WriteFile(cfg.ProductStorePath, []byte(`{"Devices":{},"Profiles":{}}`), 0644)
+	}
+
 	// 2. Spin up Mana — DatabaseDSN causes the framework to initialize
 	//    AccountStore, MessageStore, ProfileStore, ContactStore automatically.
 	app := mana.New(cfg)
 	mux := app.Mux()
 	productStore := app.ProductStore()
+
+	// 2b. Run Kuruvi Local Migrations AFTER framework creates base tables
+	migrationDB, err := sql.Open("sqlite", cfg.DatabaseDSN)
+	if err != nil {
+		log.Printf("Migration db open error: %v", err)
+	} else {
+		// Kuruvi Local Specialized Tables
+		kuruviTables := `
+			CREATE TABLE IF NOT EXISTS kuruvi_profiles (
+				user_id TEXT PRIMARY KEY,
+				kuruvi_id TEXT UNIQUE,
+				last_username_update DATETIME,
+				phone TEXT
+			);
+			CREATE TABLE IF NOT EXISTS kuruvi_contacts (
+				user_id TEXT,
+				contact_id TEXT,
+				last_msg TEXT,
+				updated_at DATETIME,
+				PRIMARY KEY (user_id, contact_id)
+			);
+		`
+		if _, err := migrationDB.Exec(kuruviTables); err != nil {
+			log.Printf("Failed to setup Kuruvi local tables: %v", err)
+		}
+
+		queries := []string{
+			`ALTER TABLE accounts ADD COLUMN phone TEXT`,
+			`ALTER TABLE accounts ADD COLUMN email TEXT`,
+		}
+		for _, q := range queries {
+			_, err = migrationDB.Exec(q)
+			if err != nil && !strings.Contains(err.Error(), "duplicate column name") && !strings.Contains(err.Error(), "no such table") {
+				log.Printf("Migration error for %s: %v", q, err)
+			}
+		}
+		migrationDB.Close()
+	}
 
 	// Verify stores were wired up properly
 	if app.AccountStore() == nil {
@@ -78,6 +131,8 @@ func main() {
 		var req struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
+			Phone    string `json:"phone,omitempty"`
+			Email    string `json:"email,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			log.Printf("[Auth] Register decode error: %v", err)
@@ -88,31 +143,68 @@ func main() {
 			http.Error(w, "username and password required", http.StatusBadRequest)
 			return
 		}
-
-		log.Printf("[Auth] Register attempt for user: %s", req.Username)
-
-		ctx := r.Context()
-		if err := app.AccountStore().CreateUser(ctx, req.Username, req.Password); err != nil {
-			log.Printf("[Auth] Register failed for %s: %v", req.Username, err)
-			status := http.StatusInternalServerError
-			errMsg := err.Error()
-			// Detect duplicate key across SQLite / Postgres / MySQL
-			if strings.Contains(errMsg, "UNIQUE") || strings.Contains(errMsg, "unique") ||
-				strings.Contains(errMsg, "duplicate") || strings.Contains(errMsg, "Duplicate") {
-				status = http.StatusConflict
-				errMsg = "user already exists"
-			}
-			http.Error(w, errMsg, status)
+		if req.Phone == "" && req.Email == "" {
+			http.Error(w, "either phone or email is required for registration", http.StatusBadRequest)
 			return
 		}
 
-		// The framework's SQLAccountStore prefixes user IDs with "u-"
-		userID := fmt.Sprintf("u-%s", req.Username)
+		log.Printf("[Auth] Register attempt for user: %s (phone: %s, email: %s)", req.Username, req.Phone, req.Email)
+
+		ctx := r.Context()
+
+		// 1. Framework Identity Hand-off
+		// Call the underlying base authentication mechanism.
+		type ContactCreator interface {
+			CreateUserWithContact(ctx context.Context, username, password, phone, email string) error
+		}
+		if contactStore, ok := app.AccountStore().(ContactCreator); ok && (req.Phone != "" || req.Email != "") {
+			if err := contactStore.CreateUserWithContact(ctx, req.Username, req.Password, req.Phone, req.Email); err != nil {
+				status := http.StatusInternalServerError
+				errMsg := err.Error()
+				if strings.Contains(errMsg, "UNIQUE") || strings.Contains(errMsg, "duplicate") {
+					status = http.StatusConflict
+					errMsg = "username already exists"
+				}
+				http.Error(w, errMsg, status)
+				return
+			}
+		} else {
+			http.Error(w, "account store configuration error", http.StatusInternalServerError)
+			return
+		}
+
+		// 2. Retrieve Framework deterministic ID
+		frameworkUserID, err := app.AccountStore().Authenticate(ctx, req.Username, req.Password)
+		if err != nil {
+			http.Error(w, "Internal server error fetching ID", http.StatusInternalServerError)
+			return
+		}
+
+		// 3. Kuruvi Local Specialized Domain ID Generation
+		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+		kuruviID := fmt.Sprintf("%s#%04d", req.Username, rng.Intn(10000))
+
+		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
+		if err == nil {
+			defer dbConn.Close()
+			_, err = dbConn.Exec("INSERT INTO kuruvi_profiles (user_id, kuruvi_id, phone, last_username_update) VALUES (?, ?, ?, ?)",
+				frameworkUserID, kuruviID, req.Phone, time.Now().Add(-24*time.Hour))
+			if err != nil {
+				log.Printf("Failed to map kuruvi ID: %v", err)
+			}
+		}
+
+		// Actual Email Delivery via go-mail (dispatched asynchronously)
+		if req.Email != "" {
+			go sendWelcomeEmail(req.Email, kuruviID)
+		} else {
+			log.Printf("[Auth] No email provided, skipping welcome mail for %s", kuruviID)
+		}
 
 		// Upsert profile in both stores (framework profile + product store)
 		if app.ProfileStore() != nil {
 			_ = app.ProfileStore().UpsertProfile(ctx, core.UserProfile{
-				UserID:      userID,
+				UserID:      frameworkUserID,
 				DisplayName: req.Username,
 				UpdatedAt:   time.Now(),
 			})
@@ -125,20 +217,23 @@ func main() {
 			})
 		}
 
-		token, err := app.JWTAuth().GenerateToken(userID, req.Username, auth.RoleUser)
+		token, err := app.JWTAuth().GenerateToken(frameworkUserID, req.Username, auth.RoleUser)
 		if err != nil {
-			log.Printf("[Auth] Token generation failed: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 
-		log.Printf("[Auth] Register success: %s (id: %s)", req.Username, userID)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]string{"token": token, "username": req.Username})
+		json.NewEncoder(w).Encode(map[string]string{
+			"token":     token,
+			"username":  req.Username,
+			"user_id":   frameworkUserID,
+			"unique_id": kuruviID,
+		})
 	}))
 
-	// 4. Auth — Login
+	// 4. Auth — Login (Username)
 	mux.HandleFunc("/api/auth/login", cors(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -172,8 +267,418 @@ func main() {
 		}
 
 		log.Printf("[Auth] Login success: %s (id: %s)", req.Username, userID)
+
+		// 1. Open a local DB connection to retrieve Kuruvi-specific metadata
+		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
+		if err != nil {
+			log.Printf("[Auth] Login db open error: %v", err)
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+		defer dbConn.Close()
+
+		// 2. Retrieve Kuruvi Unique ID
+		var kuruviID string
+		_ = dbConn.QueryRowContext(ctx, "SELECT kuruvi_id FROM kuruvi_profiles WHERE user_id = ?", userID).Scan(&kuruviID)
+
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"token": token, "username": req.Username})
+		json.NewEncoder(w).Encode(map[string]string{
+			"token":     token,
+			"username":  req.Username,
+			"user_id":   userID,
+			"unique_id": kuruviID,
+		})
+	}))
+
+	// 4b. Auth — Login by Phone Number
+	mux.HandleFunc("/api/auth/login/phone", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Phone    string `json:"phone"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			log.Printf("[Auth] Phone login decode error: %v", err)
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		if req.Phone == "" {
+			http.Error(w, "phone number required", http.StatusBadRequest)
+			return
+		}
+
+		log.Printf("[Auth] Phone login attempt for: %s", req.Phone)
+
+		ctx := r.Context()
+
+		// Type assert to access extended methods
+		type PhoneAuthenticator interface {
+			AuthenticateByPhone(ctx context.Context, phone, password string) (string, error)
+		}
+		phoneStore, ok := app.AccountStore().(PhoneAuthenticator)
+		if !ok {
+			log.Printf("[Auth] Phone authentication not supported by account store")
+			http.Error(w, "Phone login not supported", http.StatusInternalServerError)
+			return
+		}
+
+		userID, err := phoneStore.AuthenticateByPhone(ctx, req.Phone, req.Password)
+		if err != nil {
+			log.Printf("[Auth] Phone login failed for %s: %v", req.Phone, err)
+			http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+			return
+		}
+
+		// Get username for token
+		user, err := app.AccountStore().GetUser(ctx, userID)
+		if err != nil {
+			log.Printf("[Auth] Failed to get user after phone login: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		token, err := app.JWTAuth().GenerateToken(userID, user.Username, auth.RoleUser)
+		if err != nil {
+			log.Printf("[Auth] Token generation failed: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("[Auth] Phone login success: %s (id: %s)", req.Phone, userID)
+
+		// 1. Open a local DB connection to retrieve Kuruvi-specific metadata
+		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
+		if err != nil {
+			log.Printf("[Auth] Phone login db open error: %v", err)
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+		defer dbConn.Close()
+
+		// 2. Retrieve Kuruvi Unique ID
+		var kuruviID string
+		_ = dbConn.QueryRowContext(ctx, "SELECT kuruvi_id FROM kuruvi_profiles WHERE user_id = ?", userID).Scan(&kuruviID)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"token":     token,
+			"username":  user.Username,
+			"user_id":   userID,
+			"unique_id": kuruviID,
+		})
+	}))
+
+	// 4c. Auth — Login by Email
+	mux.HandleFunc("/api/auth/login/email", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			log.Printf("[Auth] Email login decode error: %v", err)
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		if req.Email == "" {
+			http.Error(w, "email required", http.StatusBadRequest)
+			return
+		}
+
+		log.Printf("[Auth] Email login attempt for: %s", req.Email)
+
+		ctx := r.Context()
+
+		// Type assert to access extended methods
+		type EmailAuthenticator interface {
+			AuthenticateByEmail(ctx context.Context, email, password string) (string, error)
+		}
+		emailStore, ok := app.AccountStore().(EmailAuthenticator)
+		if !ok {
+			log.Printf("[Auth] Email authentication not supported by account store")
+			http.Error(w, "Email login not supported", http.StatusInternalServerError)
+			return
+		}
+
+		userID, err := emailStore.AuthenticateByEmail(ctx, req.Email, req.Password)
+		if err != nil {
+			log.Printf("[Auth] Email login failed for %s: %v", req.Email, err)
+			http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+			return
+		}
+
+		// Get username for token
+		user, err := app.AccountStore().GetUser(ctx, userID)
+		if err != nil {
+			log.Printf("[Auth] Failed to get user after email login: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		token, err := app.JWTAuth().GenerateToken(userID, user.Username, auth.RoleUser)
+		if err != nil {
+			log.Printf("[Auth] Token generation failed: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("[Auth] Email login success: %s (id: %s)", req.Email, userID)
+
+		// 1. Open a local DB connection to retrieve Kuruvi-specific metadata
+		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
+		if err != nil {
+			log.Printf("[Auth] Email login db open error: %v", err)
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+		defer dbConn.Close()
+
+		// 2. Retrieve Kuruvi Unique ID
+		var kuruviID string
+		_ = dbConn.QueryRowContext(ctx, "SELECT kuruvi_id FROM kuruvi_profiles WHERE user_id = ?", userID).Scan(&kuruviID)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"token":     token,
+			"username":  user.Username,
+			"user_id":   userID,
+			"unique_id": kuruviID,
+		})
+	}))
+
+	// 4d. Auth — Reset Password
+	mux.HandleFunc("/api/auth/reset-password", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Identifier  string `json:"identifier"`
+			NewPassword string `json:"new_password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		if req.Identifier == "" || req.NewPassword == "" {
+			http.Error(w, "Identifier and new password required", http.StatusBadRequest)
+			return
+		}
+
+		// Directly update the DB since AccountStore doesn't expose a SetPassword interface yet
+		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
+		if err != nil {
+			log.Printf("[Auth] Reset Password db open error: %v", err)
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+		defer dbConn.Close()
+
+		// Manually hash password using bcrypt to maintain framework compatibility
+		hashedBytes, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+		if err != nil {
+			http.Error(w, "Failed to hash password", http.StatusInternalServerError)
+			return
+		}
+
+		ctx := r.Context()
+		// Try to match identifier against username, email, phone, or kuruvi ID
+		queryStr := `
+			UPDATE accounts 
+			SET password_hash = ? 
+			WHERE username = ?
+			   OR email = ?
+			   OR phone = ?
+			   OR user_id IN (
+			       SELECT user_id FROM kuruvi_profiles WHERE kuruvi_id = ? OR phone = ?
+			   )
+		`
+		res, err := dbConn.ExecContext(ctx, queryStr, string(hashedBytes), req.Identifier, req.Identifier, req.Identifier, req.Identifier, req.Identifier)
+		if err != nil {
+			log.Printf("[Auth] Password reset exec error: %v", err)
+			http.Error(w, "Update failed", http.StatusInternalServerError)
+			return
+		}
+
+		rowsAffected, _ := res.RowsAffected()
+		if rowsAffected == 0 {
+			http.Error(w, "User not found with provided identifier", http.StatusNotFound)
+			return
+		}
+
+		log.Printf("[Auth] Password reset successful for identifier: %s", req.Identifier)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"message": "password updated successfully"})
+	}))
+
+	// Search users by email or phone
+	mux.HandleFunc("/api/search", cors(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query().Get("q")
+		if query == "" {
+			http.Error(w, "query required", http.StatusBadRequest)
+			return
+		}
+
+		// Open db to query accounts
+		db, err := sql.Open("sqlite", cfg.DatabaseDSN)
+		if err != nil {
+			log.Printf("Search db open error: %v", err)
+			http.Error(w, "db error", http.StatusInternalServerError)
+			return
+		}
+		defer db.Close()
+
+		// Perform Kuruvi domain-specific JOIN search connecting the underlying framework ID
+		queryStr := `
+			SELECT a.user_id, a.username 
+			FROM accounts a 
+			LEFT JOIN kuruvi_profiles kp ON a.user_id = kp.user_id
+			WHERE kp.kuruvi_id = ? OR a.phone = ? OR kp.phone = ?
+		`
+		rows, err := db.Query(queryStr, query, query, query)
+		if err != nil {
+			log.Printf("Search query error: %v", err)
+			http.Error(w, "query error", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var results []map[string]string
+		for rows.Next() {
+			var userID, username string
+			if err := rows.Scan(&userID, &username); err != nil {
+				continue
+			}
+			results = append(results, map[string]string{"id": userID, "name": username})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(results)
+	}))
+
+	// 4d. Auth — Update Username
+	mux.HandleFunc("/api/auth/username", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		userID, _ := resolveUserContext(r, app.JWTAuth())
+		if userID == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var req struct {
+			NewUsername string `json:"new_username"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		if req.NewUsername == "" {
+			http.Error(w, "new_username required", http.StatusBadRequest)
+			return
+		}
+
+		ctx := r.Context()
+
+		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
+		if err != nil {
+			http.Error(w, "Database unavailable", http.StatusInternalServerError)
+			return
+		}
+		defer dbConn.Close()
+
+		// Kuruvi 2-Minute Constraint Local Check
+		var lastUpdate sql.NullTime
+		_ = dbConn.QueryRowContext(ctx, "SELECT last_username_update FROM kuruvi_profiles WHERE user_id = ?", userID).Scan(&lastUpdate)
+		if lastUpdate.Valid && time.Since(lastUpdate.Time) < 2*time.Minute {
+			http.Error(w, "username can only be updated every 2 minutes", http.StatusTooManyRequests)
+			return
+		}
+
+		// Mutate Framework Accounts table locally directly (Kuruvi Extension)
+		_, err = dbConn.ExecContext(ctx, "UPDATE accounts SET username = ? WHERE user_id = ?", req.NewUsername, userID)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE") {
+				http.Error(w, "username already taken", http.StatusConflict)
+			} else {
+				http.Error(w, "Update failed", http.StatusInternalServerError)
+			}
+			return
+		}
+
+		// Set new update boundary lock
+		_, _ = dbConn.ExecContext(ctx, "UPDATE kuruvi_profiles SET last_username_update = ? WHERE user_id = ?", time.Now(), userID)
+
+		// Sync to product store profiles
+		if productStore != nil {
+			_ = productStore.UpsertProfile(product.Profile{
+				UserID:      req.NewUsername,
+				DisplayName: req.NewUsername,
+			})
+		}
+		if app.ProfileStore() != nil {
+			// Replace display name cleanly in framework memory layer
+			_ = app.ProfileStore().UpsertProfile(ctx, core.UserProfile{
+				UserID:      userID,
+				DisplayName: req.NewUsername,
+				UpdatedAt:   time.Now(),
+			})
+		}
+
+		log.Printf("[Auth] Username updated successfully for %s to %s", userID, req.NewUsername)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"message": "username updated", "username": req.NewUsername})
+	}))
+
+	// 4e. Create Group
+	mux.HandleFunc("/api/group/create", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		userID, _ := resolveUserContext(r, app.JWTAuth())
+		if userID == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var req struct {
+			GroupName string   `json:"group_name"`
+			Members   []string `json:"members"` // array of contact UserIDs
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		// Generate a random ID or use group name hash
+		roomID := "group-" + fmt.Sprintf("%d", time.Now().UnixNano())
+		// Use the central Mana Room Manager to create an isolated logical room
+		newRoom := app.RoomManager().Create(roomID, req.GroupName, "group", userID)
+
+		// If product store is hooked, upsert room metadata there too
+		if app.ProductStore() != nil {
+			participants := append(req.Members, userID)
+			_ = app.ProductStore().UpsertConversation(product.Conversation{
+				ID:           newRoom.ID(),
+				IsGroup:      true,
+				Title:        req.GroupName,
+				Participants: participants,
+			})
+		}
+
+		log.Printf("[Group] User %s created group %s (ID: %s)", userID, req.GroupName, newRoom.ID())
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"room_id": newRoom.ID(), "group_name": req.GroupName})
 	}))
 
 	// 5. Static Files & Frontend SPA Routing
@@ -198,7 +703,7 @@ func main() {
 	})
 
 	// 6. E2EE Public Key Exchange API
-	keyExchange := app.KeyExchange()
+	e2eeStore := app.E2EEStore()
 	mux.HandleFunc("/api/e2ee/pubkey", func(w http.ResponseWriter, r *http.Request) {
 		userID := r.URL.Query().Get("user_id")
 		if userID == "" {
@@ -208,14 +713,22 @@ func main() {
 
 		switch r.Method {
 		case http.MethodGet:
-			pub, ok := keyExchange.GetPublicKey(userID)
-			if !ok {
+			if e2eeStore == nil {
+				http.Error(w, "E2EE not enabled", http.StatusServiceUnavailable)
+				return
+			}
+			pub, err := e2eeStore.LoadIdentityPublicKey(r.Context(), userID)
+			if err != nil || pub == nil {
 				http.Error(w, "Key not found", http.StatusNotFound)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{"user_id": userID, "public_key": pub})
 		case http.MethodPost:
+			if e2eeStore == nil {
+				http.Error(w, "E2EE not enabled", http.StatusServiceUnavailable)
+				return
+			}
 			var body struct {
 				PublicKey []byte `json:"public_key"`
 			}
@@ -223,7 +736,11 @@ func main() {
 				http.Error(w, "Invalid JSON", http.StatusBadRequest)
 				return
 			}
-			keyExchange.StorePublicKey(userID, body.PublicKey)
+			if err := e2eeStore.SaveIdentityPublicKey(r.Context(), userID, body.PublicKey); err != nil {
+				log.Printf("[E2EE] Failed to save identity public key for %s: %v", userID, err)
+				http.Error(w, "Failed to save key", http.StatusInternalServerError)
+				return
+			}
 			w.WriteHeader(http.StatusCreated)
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -247,8 +764,6 @@ func main() {
 
 		now := time.Now()
 		const onlineCutoff = 5 * time.Minute
-		contacts := []map[string]interface{}{}
-
 		selfUserID := ""
 		tokenStr := auth.ExtractTokenFromQuery(r)
 		if tokenStr != "" && app.JWTAuth() != nil {
@@ -258,38 +773,90 @@ func main() {
 			}
 		}
 
-		for userID, devices := range snap.Devices {
-			// Compare against both the raw username and the prefixed userID
-			if userID == selfUserID || "u-"+userID == selfUserID {
+		if selfUserID == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
+		if err != nil {
+			http.Error(w, "Database unavailable", http.StatusInternalServerError)
+			return
+		}
+		defer dbConn.Close()
+
+		// Query the persistent contacts table JOIN accounts for names
+		query := `
+			SELECT kc.contact_id, a.username, kc.last_msg, kc.updated_at
+			FROM kuruvi_contacts kc
+			JOIN accounts a ON kc.contact_id = a.user_id
+			WHERE kc.user_id = ?
+			ORDER BY kc.updated_at DESC
+		`
+		rows, err := dbConn.Query(query, selfUserID)
+		if err != nil {
+			log.Printf("Contacts query error: %v", err)
+			http.Error(w, "query error", http.StatusInternalServerError)
+			return
+		}
+		// Use existing 'now' and 'onlineCutoff' from above
+		var contactsList []map[string]interface{}
+
+		for rows.Next() {
+			var contactID, username, lastMsg string
+			var updatedAt time.Time
+			if err := rows.Scan(&contactID, &username, &lastMsg, &updatedAt); err != nil {
 				continue
 			}
-			lastSeen := time.Time{}
-			for _, d := range devices {
-				if d.LastSeenAt.After(lastSeen) {
-					lastSeen = d.LastSeenAt
+
+			// Check Online Status from Framework Product Store Snapshot
+			status := "Offline"
+			if devices, ok := snap.Devices[contactID]; ok {
+				var lastSeen time.Time
+				for _, d := range devices {
+					if d.LastSeenAt.After(lastSeen) {
+						lastSeen = d.LastSeenAt
+					}
+				}
+				if now.Sub(lastSeen) <= onlineCutoff {
+					status = "Online"
 				}
 			}
-			if now.Sub(lastSeen) > onlineCutoff {
-				continue
-			}
-			p, ok := snap.Profiles[userID]
-			if !ok {
-				p = product.Profile{UserID: userID, DisplayName: userID}
-			}
-			status := "Online"
-			if p.Status != "" {
-				status = p.Status
-			}
-			contacts = append(contacts, map[string]interface{}{
-				"id":      userID,
-				"name":    p.DisplayName,
+
+			contactsList = append(contactsList, map[string]interface{}{
+				"id":      contactID,
+				"name":    username,
 				"status":  status,
-				"lastMsg": "Say hi to start chatting!",
+				"lastMsg": lastMsg,
 			})
 		}
 
+		// If list is empty, also include anyone currently online to help discovery
+		if len(contactsList) == 0 {
+			for userID, devices := range snap.Devices {
+				if userID == selfUserID {
+					continue
+				}
+				var lastSeen time.Time
+				for _, d := range devices {
+					if d.LastSeenAt.After(lastSeen) {
+						lastSeen = d.LastSeenAt
+					}
+				}
+				if now.Sub(lastSeen) <= onlineCutoff {
+					p, _ := snap.Profiles[userID]
+					name := userID
+					if p.DisplayName != "" {
+						name = p.DisplayName
+					}
+					contactsList = append(contactsList, map[string]interface{}{
+						"id": userID, "name": name, "status": "Online", "lastMsg": "Say hi!"})
+				}
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(contacts)
+		json.NewEncoder(w).Encode(contactsList)
 	})
 
 	// 8. Presence & Message Logging hooks
@@ -300,6 +867,26 @@ func main() {
 	app.OnMessage(func(msg core.Message) {
 		log.Printf("[Message stored] ID:%s from %s to target:%s room:%s payload len:%d",
 			msg.ID, msg.SenderID, msg.TargetID, msg.RoomID, len(msg.Payload))
+
+		// Persist interaction in kuruvi_contacts for both parties!
+		// Direct to-user messaging implies TargetID is a userID.
+		if msg.TargetID != "" && !strings.HasPrefix(msg.TargetID, "group-") {
+			dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
+			if err == nil {
+				defer dbConn.Close()
+				q := `
+					INSERT INTO kuruvi_contacts (user_id, contact_id, last_msg, updated_at) 
+					VALUES (?, ?, ?, ?)
+					ON CONFLICT(user_id, contact_id) DO UPDATE SET 
+						last_msg = excluded.last_msg, 
+						updated_at = excluded.updated_at
+				`
+				// Record for Sender
+				_, _ = dbConn.Exec(q, msg.SenderID, msg.TargetID, "[Encrypted]", time.Now())
+				// Record for Receiver
+				_, _ = dbConn.Exec(q, msg.TargetID, msg.SenderID, "[Encrypted]", time.Now())
+			}
+		}
 	})
 
 	// 9. Start Server
@@ -330,6 +917,54 @@ func resolveUserContext(r *http.Request, jwtAuth *auth.JWTAuth) (userID, usernam
 		return "", ""
 	}
 	return claims.UserID, claims.Username
+}
+
+// sendWelcomeEmail handles outbound SMTP dispatch using wneessen/go-mail.
+func sendWelcomeEmail(toEmail, kuruviID string) {
+	// Attempt to load SMTP from environment variables
+	smtpHost := os.Getenv("KURUVI_SMTP_HOST")
+	smtpPort := os.Getenv("KURUVI_SMTP_PORT")
+	smtpUser := os.Getenv("KURUVI_SMTP_USER")
+	smtpPass := os.Getenv("KURUVI_SMTP_PASS")
+
+	if smtpHost == "" {
+		log.Printf("[Email Service] SMTP configuration (KURUVI_SMTP_HOST) missing. Intercepting delivery to %s for ID: %s", toEmail, kuruviID)
+		return
+	}
+
+	m := mail.NewMsg()
+	if err := m.From("noreply@kuruvi.mana"); err != nil {
+		log.Printf("[Email Service] Failed to set generic From address: %v", err)
+		return
+	}
+
+	if err := m.To(toEmail); err != nil {
+		log.Printf("[Email Service] Failed to validate recipient address %s: %v", toEmail, err)
+		return
+	}
+
+	m.Subject("Welcome to Kuruvi! Here is your Unique Connect ID")
+
+	body := fmt.Sprintf("Your account is ready.\n\nYour unique Kuruvi ID is: %s\n\nShare this ID so people can connect with you securely on the messaging platform.", kuruviID)
+	m.SetBodyString(mail.TypeTextPlain, body)
+
+	port := 587
+	if smtpPort != "" {
+		fmt.Sscanf(smtpPort, "%d", &port)
+	}
+
+	// Instantiate SMTP payload and execute
+	c, err := mail.NewClient(smtpHost, mail.WithPort(port), mail.WithSMTPAuth(mail.SMTPAuthPlain), mail.WithUsername(smtpUser), mail.WithPassword(smtpPass))
+	if err != nil {
+		log.Printf("[Email Service] Fatal error instantiating mail client: %v", err)
+		return
+	}
+
+	if err := c.DialAndSend(m); err != nil {
+		log.Printf("[Email Service] Fatal error dialing SMTP transmission: %v", err)
+	} else {
+		log.Printf("[Email Service] Successfully transmitted welcome connection code to %s", toEmail)
+	}
 }
 
 // Ensure context is used (resolveUserContext is a helper available for future endpoints)

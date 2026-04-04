@@ -17,6 +17,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.42.0
 	go.opentelemetry.io/otel/trace v1.42.0
 	golang.org/x/crypto v0.49.0
+	mellium.im/crypto v0.0.0-20241204192738-f3cc64cd1709
 	modernc.org/sqlite v1.48.1
 )
 

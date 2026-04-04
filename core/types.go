@@ -45,22 +45,32 @@ type User struct {
 
 // RoomInfo represents metadata about a room.
 type RoomInfo struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Members []User `json:"members"`
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Type      string    `json:"type,omitempty"`
+	OwnerID   string    `json:"owner_id,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	Members   []User    `json:"members"`
 }
 
 // SignalType defines signaling message types.
 type SignalType string
 
 const (
-	SignalOffer         SignalType = "offer"
-	SignalAnswer        SignalType = "answer"
-	SignalCandidate     SignalType = "candidate"
-	SignalLeave         SignalType = "leave"
-	SignalReady         SignalType = "ready"
-	SignalKeyExchange   SignalType = "key_exchange"
-	SignalJoin          SignalType = "join"
+	SignalOffer           SignalType = "offer"
+	SignalAnswer          SignalType = "answer"
+	SignalCandidate       SignalType = "candidate"
+	SignalSFUOffer        SignalType = "sfu_offer"
+	SignalSFUAnswer       SignalType = "sfu_answer"
+	SignalSFUCandidate    SignalType = "sfu_candidate"
+	SignalSubscribe       SignalType = "subscribe"
+	SignalLeave           SignalType = "leave"
+	SignalReady           SignalType = "ready"
+	SignalKeyExchange     SignalType = "key_exchange"
+	SignalGetPreKeyBundle SignalType = "get_prekey_bundle"
+	SignalPreKeyRefill    SignalType = "prekey_refill"
+	SignalEncryptedFanout SignalType = "encrypted_fanout"
+	SignalJoin            SignalType = "join"
 	SignalTyping        SignalType = "typing"
 	SignalMessage       SignalType = "message"
 	SignalMute          SignalType = "mute"
@@ -136,4 +146,12 @@ type Notification struct {
 	Body      string                 `json:"body"`
 	Data      map[string]interface{} `json:"data,omitempty"`
 	Timestamp time.Time              `json:"timestamp"`
+}
+
+// EncryptedFanout represents a fan-out message sent to multiple devices.
+// Used for "Signal-grade" multi-device E2EE (Sesame lite).
+type EncryptedFanout struct {
+	Type     string            `json:"type"` // "encrypted_fanout"
+	SenderID string            `json:"sender_id"`
+	Payloads map[string][]byte `json:"payloads"` // map[deviceID]encryptedPayload
 }

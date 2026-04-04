@@ -66,6 +66,15 @@ type DeviceInfo struct {
 	LastSeenAt time.Time `json:"last_seen_at"`
 }
 
+// RoomStore defines the interface for persisting and retrieving rooms.
+type RoomStore interface {
+	CreateRoom(ctx context.Context, name, roomType, ownerID string, memberIDs []string) (string, error)
+	GetRoom(ctx context.Context, roomID string) (RoomInfo, error)
+	ListUserRooms(ctx context.Context, userID string) ([]RoomInfo, error)
+	AddMember(ctx context.Context, roomID, userID string) error
+	RemoveMember(ctx context.Context, roomID, userID string) error
+}
+
 // StoreProvider provides access to all specialized storage components.
 type StoreProvider interface {
 	Messages() MessageStore

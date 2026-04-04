@@ -41,7 +41,7 @@ func (m *mockConn) Messages() []string {
 }
 
 func TestRoomAddRemoveMember(t *testing.T) {
-	room := NewRoom("room1", "Test Room")
+	room := NewRoom("room1", "Test Room", "group", "user1")
 	user := core.User{ID: "user1", Username: "alice"}
 	conn := newMockConn()
 
@@ -73,7 +73,7 @@ func TestRoomAddRemoveMember(t *testing.T) {
 }
 
 func TestRoomBroadcast(t *testing.T) {
-	room := NewRoom("room1", "Test Room")
+	room := NewRoom("room1", "Test Room", "group", "user1")
 	conn1 := newMockConn()
 	conn2 := newMockConn()
 
@@ -106,7 +106,7 @@ func TestRoomBroadcast(t *testing.T) {
 }
 
 func TestRoomSend(t *testing.T) {
-	room := NewRoom("room1", "Test Room")
+	room := NewRoom("room1", "Test Room", "group", "user1")
 	conn := newMockConn()
 	user := core.User{ID: "user1", Username: "alice"}
 	room.AddMember(user, conn)
@@ -129,7 +129,7 @@ func TestRoomSend(t *testing.T) {
 func TestManagerCreateAndGet(t *testing.T) {
 	mgr := NewManager()
 
-	room := mgr.Create("r1", "Room 1")
+	room := mgr.Create("r1", "Room 1", "group", "u1")
 	if room == nil {
 		t.Fatal("Create returned nil")
 	}
@@ -175,8 +175,8 @@ func TestManagerJoinAndLeave(t *testing.T) {
 
 func TestManagerList(t *testing.T) {
 	mgr := NewManager()
-	mgr.Create("r1", "Room 1")
-	mgr.Create("r2", "Room 2")
+	mgr.Create("r1", "Room 1", "group", "u1")
+	mgr.Create("r2", "Room 2", "group", "u1")
 
 	list := mgr.List()
 	if len(list) != 2 {
@@ -186,7 +186,7 @@ func TestManagerList(t *testing.T) {
 
 func TestManagerDelete(t *testing.T) {
 	mgr := NewManager()
-	mgr.Create("r1", "Room 1")
+	mgr.Create("r1", "Room 1", "group", "u1")
 	mgr.Delete("r1")
 
 	_, err := mgr.Get("r1")

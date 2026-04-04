@@ -2,6 +2,7 @@ package mana
 
 import (
 	"context"
+	"crypto/ecdh"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -44,7 +45,8 @@ type App struct {
 	signalHub   *signaling.Hub
 	rtcManager  *rtc.Manager
 	callManager *rtc.CallManager
-	keyExchange *e2ee.HandshakeManager
+	e2eeStore   e2ee.KeyStore
+	sessionMgr  *e2ee.DefaultSessionManager
 	router      *signaling.Router
 	wsHandler   *ws.Handler
 	notifHub    *notification.Hub
@@ -63,6 +65,7 @@ type App struct {
 	contact core.ContactStore
 	device  core.DeviceStore
 	prefs   core.PreferenceStore
+	rooms   core.RoomStore
 	product *product.Store
 	tracing *observ.Tracing
 	cluster cluster.Backend
@@ -120,6 +123,18 @@ func New(cfg core.Config) *App {
 		userSessions: make(map[string]map[string]*room.UserSession),
 		deviceCursor: make(map[string]uint64),
 	}
+
+	app.rtcManager.SetOnTrack(func(peerID, roomID, trackID string) {
+		app.logger.Info("SFU: Track %s added to room %s by peer %s", trackID, roomID, peerID)
+		
+		// Broadcast to room that a new track is available
+		_ = app.signalHub.Broadcast(context.Background(), roomID, "SYSTEM", core.Signal{
+			Type:    core.SignalTrackAdded,
+			From:    "SFU",
+			RoomID:  roomID,
+			Payload: []byte(trackID),
+		})
+	})
 
 	// Default database initialization if DSN is provided
 	if cfg.DatabaseDSN != "" && app.backend == nil {
@@ -196,9 +211,15 @@ func New(cfg core.Config) *App {
 	}
 
 	// E2EE
-	if cfg.EnableE2EE {
-		app.keyExchange = e2ee.NewHandshakeManager()
-		logger.Info("E2EE key exchange enabled")
+	if cfg.EnableE2EE && app.backend != nil {
+		e2eeStore, err := e2ee.NewSQLKeyStore(app.backend, cfg.DatabaseTablePrefix)
+		if err != nil {
+			logger.Error("failed to initialize E2EE store: %v", err)
+		} else {
+			app.e2eeStore = e2eeStore
+			app.sessionMgr = e2ee.NewSessionManager(e2eeStore)
+			logger.Info("E2EE key exchange and session management enabled (SQL-backed)")
+		}
 	}
 
 	// Message router (uses signaling package)
@@ -209,6 +230,7 @@ func New(cfg core.Config) *App {
 		Logger:      app,
 		RBAC:        app.rbacAdapter(),
 		OnMessage:   app.handleFrameworkMessage,
+		RoomStore:   app.rooms,
 	})
 
 	// RTC signal wiring
@@ -228,6 +250,14 @@ func New(cfg core.Config) *App {
 		OnDisconnect:   app.onWSDisconnect,
 		OnMessage:      app.onWSMessage,
 	})
+
+	// Product store initialization
+	pStore, err := product.NewStore(cfg.ProductStorePath, cfg.AttachmentDir)
+	if err != nil {
+		logger.Error("failed to initialize product store: %v", err)
+	} else {
+		app.product = pStore
+	}
 
 	return app
 }
@@ -250,7 +280,7 @@ func (a *App) JWTAuth() *auth.JWTAuth              { return a.jwtAuth }
 func (a *App) RBAC() *auth.RBAC                    { return a.rbac }
 func (a *App) Metrics() *observ.Metrics            { return a.metrics }
 func (a *App) Mux() *http.ServeMux                 { return a.mux }
-func (a *App) KeyExchange() *e2ee.HandshakeManager { return a.keyExchange }
+func (a *App) E2EEStore() e2ee.KeyStore             { return a.e2eeStore }
 func (a *App) CallManager() *rtc.CallManager       { return a.callManager }
 func (a *App) Logger() *observ.Logger              { return a.logger }
 func (a *App) NotificationHub() *notification.Hub  { return a.notifHub }
@@ -260,6 +290,7 @@ func (a *App) ProfileStore() core.ProfileStore { return a.profile }
 func (a *App) ContactStore() core.ContactStore { return a.contact }
 func (a *App) DeviceStore() core.DeviceStore   { return a.device }
 func (a *App) PreferenceStore() core.PreferenceStore { return a.prefs }
+func (a *App) RoomStore() core.RoomStore       { return a.rooms }
 func (a *App) DBBackend() *db.Backend { return a.backend }
 func (a *App) ProductStore() *product.Store { return a.product }
 
@@ -282,14 +313,24 @@ func (a *App) initializeDefaultStores(backend *db.Backend) {
 		a.store, _ = storage.NewSQLMessageStoreWithPrefix(backend, prefix)
 	}
 	if a.account == nil {
-		a.account, _ = auth.NewSQLAccountStoreWithPrefix(backend, prefix)
+		var err error
+		a.account, err = auth.NewSQLAccountStoreWithPrefix(backend, prefix)
+		if err != nil {
+			a.logger.Error("Failed to initialize SQL Account Store: %v", err)
+		}
 	}
 	if a.profile == nil {
-		socialStore, _ := social.NewSQLSocialStoreWithPrefix(backend, prefix)
+		socialStore, err := social.NewSQLSocialStoreWithPrefix(backend, prefix)
+		if err != nil {
+			a.logger.Error("Failed to initialize SQL Social Store: %v", err)
+		}
 		a.profile = socialStore
 		a.contact = socialStore
 		// Default implementations for others if not provided
 		a.prefs, _ = settings.NewSQLPreferenceStoreWithPrefix(backend, prefix)
+	}
+	if a.rooms == nil {
+		a.rooms, _ = storage.NewSQLRoomStoreWithPrefix(backend, prefix)
 	}
 }
 
@@ -299,6 +340,8 @@ func (a *App) WithProfileStore(s core.ProfileStore) *App { a.profile = s; return
 func (a *App) WithContactStore(s core.ContactStore) *App { a.contact = s; return a }
 func (a *App) WithDeviceStore(s core.DeviceStore) *App   { a.device = s; return a }
 func (a *App) WithPreferenceStore(s core.PreferenceStore) *App { a.prefs = s; return a }
+func (a *App) WithRoomStore(s core.RoomStore) *App { a.rooms = s; return a }
+func (a *App) WithProductStore(s *product.Store) *App { a.product = s; return a }
 
 // --- Logic Hooks ---
 
@@ -378,13 +421,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 	a.mu.RUnlock()
 
-	if a.keyExchange != nil {
-		a.mu.RLock()
-		for uid := range a.sessions {
-			a.keyExchange.RemovePeer(uid)
-		}
-		a.mu.RUnlock()
-	}
+	// E2EE cleanup is handled by the KeyStore (persistent storage)
 
 	if a.server != nil {
 		err := a.server.Shutdown(ctx)
@@ -418,8 +455,10 @@ func (a *App) onWSConnect(peerID, username, userRole string, conn ws.Conn) {
 
 	peer := &signaling.Peer{ID: peerID, UserID: userID, DeviceID: deviceID, Username: username, Conn: conn, Context: ctx, Cancel: cancel}
 	session := room.NewDeviceSession(peerID, userID, username, deviceID, conn)
-	_ = a.product.TouchDevice(userID, deviceID)
-	_ = a.product.UpsertProfile(product.Profile{UserID: userID, DisplayName: username})
+	if a.product != nil {
+		_ = a.product.TouchDevice(userID, deviceID)
+		_ = a.product.UpsertProfile(product.Profile{UserID: userID, DisplayName: username})
+	}
 
 	a.mu.Lock()
 	if old, ok := a.sessions[peerID]; ok {
@@ -513,17 +552,21 @@ func (a *App) handleFrameworkMessage(msg core.Message) {
 		if a.onMessageStored != nil {
 			a.onMessageStored(context.Background(), msg)
 		}
-		_ = a.product.UpsertConversation(product.Conversation{
-			ID:           conversationID,
-			IsGroup:      msg.RoomID != "",
-			Participants: uniqueStrings(append([]string{msg.SenderID}, recipients...)),
-			Title:        msg.RoomID,
-		})
-		_ = a.product.AddMessage(conversationID, msg)
+		if a.product != nil {
+			_ = a.product.UpsertConversation(product.Conversation{
+				ID:           conversationID,
+				IsGroup:      msg.RoomID != "",
+				Participants: uniqueStrings(append([]string{msg.SenderID}, recipients...)),
+				Title:        msg.RoomID,
+			})
+			_ = a.product.AddMessage(conversationID, msg)
+		}
 		for _, recipient := range recipients {
 			if a.isUserOnline(recipient) {
 				_ = a.store.MarkDelivered(context.Background(), msg.ID, recipient)
-				_ = a.product.MarkDelivered(msg.ID, recipient)
+				if a.product != nil {
+					_ = a.product.MarkDelivered(msg.ID, recipient)
+				}
 			}
 		}
 	}
@@ -665,6 +708,44 @@ func (a *App) setupRTCSignaling() {
 		a.signalHub.Send(ctx, core.Signal{Type: core.SignalAnswer, From: "SFU", To: sig.From, RoomID: sig.RoomID, SDP: answer.SDP})
 	})
 
+	a.signalHub.On(core.SignalSFUOffer, func(sig core.Signal) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		
+		userID, _ := splitSessionID(sig.From)
+		offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sig.SDP}
+		
+		answer, err := a.rtcManager.HandleOffer(ctx, sig.From, userID, sig.RoomID, offer)
+		if err != nil {
+			a.logger.Error("SFU: Error handling offer from %s: %v", sig.From, err)
+			return
+		}
+		
+		_ = a.signalHub.Send(ctx, core.Signal{
+			Type:   core.SignalSFUAnswer,
+			From:   "SYSTEM",
+			To:     sig.From,
+			RoomID: sig.RoomID,
+			SDP:    answer.SDP,
+		})
+	})
+
+	a.signalHub.On(core.SignalSFUAnswer, func(sig core.Signal) {
+		answer := webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: sig.SDP}
+		_ = a.rtcManager.HandleAnswer(sig.From, answer)
+	})
+
+	a.signalHub.On(core.SignalSFUCandidate, func(sig core.Signal) {
+		var candidate webrtc.ICECandidateInit
+		if str, ok := sig.Candidate.(string); ok {
+			json.Unmarshal([]byte(str), &candidate)
+		} else {
+			raw, _ := json.Marshal(sig.Candidate)
+			json.Unmarshal(raw, &candidate)
+		}
+		a.rtcManager.HandleICECandidate(sig.From, candidate)
+	})
+
 	a.signalHub.On(core.SignalCandidate, func(sig core.Signal) {
 		var candidate webrtc.ICECandidateInit
 		if str, ok := sig.Candidate.(string); ok {
@@ -676,8 +757,27 @@ func (a *App) setupRTCSignaling() {
 		a.rtcManager.HandleICECandidate(sig.From, candidate)
 	})
 
-	a.signalHub.On("subscribe", func(sig core.Signal) {
-		a.rtcManager.Subscribe(sig.From, string(sig.Payload))
+	a.signalHub.On(core.SignalSubscribe, func(sig core.Signal) {
+		trackID := string(sig.Payload)
+		err := a.rtcManager.Subscribe(sig.From, trackID)
+		if err != nil {
+			a.logger.Error("SFU: Failed to subscribe peer %s to track %s: %v", sig.From, trackID, err)
+			return
+		}
+		
+		// Subscribing creates a new track which requires an SDP renegotiation. Let's restart ICE/offer process.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		offer, err := a.rtcManager.RestartICE(sig.From)
+		if err == nil {
+			_ = a.signalHub.Send(ctx, core.Signal{
+				Type:   core.SignalSFUOffer,
+				From:   "SYSTEM",
+				To:     sig.From,
+				RoomID: sig.RoomID,
+				SDP:    offer.SDP,
+			})
+		}
 	})
 
 	a.signalHub.On(core.SignalICERestart, func(sig core.Signal) {
@@ -712,14 +812,141 @@ func (a *App) setupRTCSignaling() {
 	})
 
 	a.signalHub.On(core.SignalKeyExchange, func(sig core.Signal) {
-		if a.keyExchange == nil {
+		if a.e2eeStore == nil {
 			return
 		}
-		a.keyExchange.StorePublicKey(sig.From, sig.Payload)
-		if sig.To != "" {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			a.signalHub.Send(ctx, sig)
+		// sig.Payload should be a JSON-serialized PublicPreKeyBundle
+		var bundle e2ee.PublicPreKeyBundle
+		if err := json.Unmarshal(sig.Payload, &bundle); err != nil {
+			a.logger.Error("E2EE: failed to unmarshal bundle from %s: %v", sig.From, err)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		// Save the bundle using a composite key: userID:deviceID
+		userID, _ := splitSessionID(sig.From)
+		if bundle.DeviceID == "" {
+			_, bundle.DeviceID = splitSessionID(sig.From)
+		}
+		
+		target := userID
+		if bundle.DeviceID != "" {
+			target = userID + ":" + bundle.DeviceID
+		}
+
+		if err := a.e2eeStore.SavePreKeyBundle(ctx, target, &bundle); err != nil {
+			a.logger.Error("E2EE: failed to save bundle for %s: %v", target, err)
+			return
+		}
+
+		a.logger.Info("E2EE: saved prekey bundle for %s (device: %s, OPKs: %d)", userID, bundle.DeviceID, len(bundle.OneTimePreKeys))
+	})
+
+	a.signalHub.On(core.SignalGetPreKeyBundle, func(sig core.Signal) {
+		if a.e2eeStore == nil || sig.To == "" {
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		// If a specific device is requested (sig.To is userID:deviceID)
+		// Otherwise, find all devices for that user (Fan-out discovery)
+		targetUserID, targetDeviceID := splitSessionID(sig.To)
+		
+		var bundles []*e2ee.PublicPreKeyBundle
+		if targetDeviceID != "" {
+			bundle, err := a.e2eeStore.LoadPreKeyBundle(ctx, sig.To)
+			if err == nil && bundle != nil {
+				bundles = append(bundles, bundle)
+			}
+		} else {
+			// Find all devices for this user
+			if a.device != nil {
+				devices, _ := a.device.GetDevices(ctx, targetUserID)
+				for _, d := range devices {
+					bundle, err := a.e2eeStore.LoadPreKeyBundle(ctx, targetUserID+":"+d.DeviceID)
+					if err == nil && bundle != nil {
+						bundles = append(bundles, bundle)
+					}
+				}
+			}
+		}
+
+		if len(bundles) == 0 {
+			return
+		}
+
+		// Return bundles to the requester
+		payload, _ := json.Marshal(bundles)
+		_ = a.signalHub.Send(ctx, core.Signal{
+			Type:    core.SignalGetPreKeyBundle,
+			From:    "SYSTEM",
+			To:      sig.From,
+			Payload: payload,
+		})
+	})
+
+	a.signalHub.On(core.SignalPreKeyRefill, func(sig core.Signal) {
+		if a.e2eeStore == nil {
+			return
+		}
+		var bundle e2ee.PublicPreKeyBundle
+		if err := json.Unmarshal(sig.Payload, &bundle); err != nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		userID, deviceID := splitSessionID(sig.From)
+		target := userID + ":" + deviceID
+		
+		// Load existing bundle, add new OPKs, and save
+		existing, _ := a.e2eeStore.LoadPreKeyBundle(ctx, target)
+		if existing == nil {
+			existing = &bundle
+		} else {
+			if existing.OneTimePreKeys == nil {
+				existing.OneTimePreKeys = make(map[uint32]*ecdh.PublicKey)
+			}
+			for id, key := range bundle.OneTimePreKeys {
+				existing.OneTimePreKeys[id] = key
+			}
+		}
+		_ = a.e2eeStore.SavePreKeyBundle(ctx, target, existing)
+		a.logger.Info("E2EE: refilled OPKs for %s (total: %d)", target, len(existing.OneTimePreKeys))
+	})
+
+	a.signalHub.On(core.SignalEncryptedFanout, func(sig core.Signal) {
+		var fanout core.EncryptedFanout
+		if err := json.Unmarshal(sig.Payload, &fanout); err != nil {
+			a.logger.Error("E2EE: failed to unmarshal fanout from %s: %v", sig.From, err)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		// sig.To represents the destination UserID. We fan out to each device in the payload.
+		targetUserID := sig.To
+		for deviceID, encPayload := range fanout.Payloads {
+			targetPeerID := targetUserID + ":" + deviceID
+			
+			// Reconstruct a standard message signal for the target device
+			deviceSig := core.Signal{
+				Type:      core.SignalMessage,
+				From:      sig.From,
+				To:        targetPeerID,
+				Payload:   encPayload,
+				Timestamp: time.Now(),
+			}
+
+			// Deliver via Signal Hub
+			if err := a.signalHub.Send(ctx, deviceSig); err != nil {
+				a.logger.Error("E2EE: failed to deliver fanout to %s: %v", targetPeerID, err)
+			}
 		}
 	})
 }

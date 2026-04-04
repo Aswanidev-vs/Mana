@@ -12,3 +12,16 @@ storage/message_store_test.go
 signaling/router_test.go
 ws/inmemory_test.go
 .vscode/
+crypto/
+ 
+# Infrastructure & Storage
+*.db
+*.db-shm
+*.db-wal
+data/
+kuruvi/backend/data/
+ 
+# OS & IDE
+.vscode/
+.DS_Store
+Thumbs.db

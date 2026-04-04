@@ -28,6 +28,7 @@ type RouterConfig struct {
 	Logger      Logger
 	RBAC        Authorizer
 	OnMessage   MessageHandler
+	RoomStore   core.RoomStore
 }
 
 // Logger is a minimal logging interface.
@@ -124,12 +125,18 @@ func (r *Router) handleJoin(ctx context.Context, peer *Peer, userRole string, si
 		return
 	}
 	r.config.RoomManager.JoinSession(signal.RoomID, peer.ID, core.User{ID: peer.UserID, Username: peer.Username, Online: true}, peer.Conn)
+	if r.config.RoomStore != nil {
+		_ = r.config.RoomStore.AddMember(ctx, signal.RoomID, peer.UserID)
+	}
 	r.config.Hub.AddPeerToRoom(signal.RoomID, peer.ID)
 	r.broadcastPresence(ctx, signal.RoomID, peer.ID, peer.UserID, peer.Username, true)
 }
 
 func (r *Router) handleLeave(ctx context.Context, peer *Peer, signal core.Signal) {
 	r.config.RoomManager.Leave(signal.RoomID, peer.ID)
+	if r.config.RoomStore != nil {
+		_ = r.config.RoomStore.RemoveMember(ctx, signal.RoomID, peer.UserID)
+	}
 	r.config.Hub.RemovePeerFromRoom(signal.RoomID, peer.ID)
 	r.broadcastPresence(ctx, signal.RoomID, peer.ID, peer.UserID, peer.Username, false)
 }

@@ -16,13 +16,56 @@
             <h1 class="logo-text">Kuruvi</h1>
             <p style="color: var(--text-secondary); margin-top: -12px; font-size: 14px;">Secure. Real-time. Beautiful.</p>
             
-            <div id="auth-form" style="display: flex; flex-direction: column; gap: 16px;">
-                <input type="text" id="username" class="input-field" placeholder="Username" autocomplete="username">
-                <input type="password" id="password" class="input-field" placeholder="Password" autocomplete="current-password">
+            <div id="login-tabs-container">
+                <div id="login-tabs" style="display: flex; gap: 8px; margin-top: 16px;">
+                    <button class="login-tab active" data-tab="username">Username</button>
+                    <button class="login-tab" data-tab="phone">Phone</button>
+                    <button class="login-tab" data-tab="email">Email</button>
+                </div>
+            </div>
+            
+            <div id="auth-forms-container" style="display: flex; flex-direction: column; gap: 16px; margin-top: 16px;">
+                <!-- Sign In Forms -->
+                <div id="signin-logic">
+                    <div id="username-form" class="login-form active">
+                        <input type="text" id="username" class="input-field" placeholder="Username" autocomplete="username">
+                        <div style="position: relative;">
+                            <input type="password" id="password" class="input-field" placeholder="Password" style="width: 100%; padding-right: 40px;" autocomplete="current-password">
+                            <button type="button" class="btn-icon toggle-password" data-target="password" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; background: transparent; padding: 0; outline: none; border: none; color: var(--accent-cyan);"><i data-lucide="eye"></i></button>
+                        </div>
+                        
+                        <!-- Registration-only fields (Hidden by default) -->
+                        <div id="registration-fields" class="hidden" style="margin-top: 12px; border-top: 1px solid var(--border-color); padding-top: 12px; display: flex; flex-direction: column; gap: 12px;">
+                            <p style="font-size: 12px; color: var(--text-secondary); margin: 0;">Discovery: Provide at least one</p>
+                            <input type="tel" id="reg-phone" class="input-field" placeholder="Phone Number" autocomplete="tel">
+                            <input type="email" id="reg-email" class="input-field" placeholder="Email Address" autocomplete="email">
+                        </div>
+                    </div>
+                    
+                    <div id="phone-form" class="login-form">
+                        <input type="tel" id="phone" class="input-field" placeholder="Phone Number" autocomplete="tel">
+                        <div style="position: relative;">
+                            <input type="password" id="phone-password" class="input-field" placeholder="Password" style="width: 100%; padding-right: 40px;" autocomplete="current-password">
+                            <button type="button" class="btn-icon toggle-password" data-target="phone-password" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; background: transparent; padding: 0; outline: none; border: none; color: var(--accent-cyan);"><i data-lucide="eye"></i></button>
+                        </div>
+                    </div>
+                    
+                    <div id="email-form" class="login-form">
+                        <input type="email" id="email" class="input-field" placeholder="Email Address" autocomplete="email">
+                        <div style="position: relative;">
+                            <input type="password" id="email-password" class="input-field" placeholder="Password" style="width: 100%; padding-right: 40px;" autocomplete="current-password">
+                            <button type="button" class="btn-icon toggle-password" data-target="email-password" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; background: transparent; padding: 0; outline: none; border: none; color: var(--accent-cyan);"><i data-lucide="eye"></i></button>
+                        </div>
+                    </div>
+                </div>
+                
                 <button id="login-btn" class="btn-primary">Sign In</button>
-                <p style="font-size: 13px; color: var(--text-secondary);">
-                    New here? <a href="#" id="toggle-auth" style="color: var(--accent-cyan); text-decoration: none;">Create an account</a>
-                </p>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <p style="font-size: 13px; color: var(--text-secondary); margin: 0;">
+                        <span id="toggle-text">New here?</span> <a href="#" id="toggle-auth" style="color: var(--accent-cyan); text-decoration: none;">Create an account</a>
+                    </p>
+                    <a href="#" id="forgot-password-link" style="font-size: 13px; color: var(--text-secondary); text-decoration: none;">Forgot password?</a>
+                </div>
                 <div id="auth-error" style="color: var(--danger); font-size: 13px; min-height: 20px;"></div>
             </div>
         </div>
@@ -35,14 +78,13 @@
             <div class="sidebar-header">
                 <h1 class="logo-text" style="font-size: 20px;">Kuruvi</h1>
                 <div style="display: flex; gap: 8px;">
-                    <button class="btn-icon" title="New Group"><i data-lucide="users"></i></button>
-                    <button class="btn-icon" id="profile-btn"><i data-lucide="circle-user"></i></button>
-                    <button class="btn-icon" id="logout-btn"><i data-lucide="log-out"></i></button>
+                    <button class="btn-icon" id="new-group-btn" title="New Group"><i data-lucide="users"></i></button>
+                    <button class="btn-icon" id="profile-btn" title="View Profile Mode"><i data-lucide="circle-user"></i></button>
                 </div>
             </div>
 
             <div class="search-container">
-                <input type="text" class="search-input" placeholder="Search chats or users...">
+                <input type="text" class="search-input" placeholder="Search by Unique ID or Phone...">
             </div>
 
             <div class="contact-list" id="contact-list">
@@ -101,6 +143,83 @@
                 </div>
             </div>
         </main>
+    </div>
+
+    <!-- ═══ Profile Settings Modal ═══ -->
+    <div id="profile-modal" class="modal-overlay hidden">
+        <div class="modal-content glass" style="text-align: center;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+                <h2 style="margin: 0; font-size: 20px;">Your Profile</h2>
+                <button id="close-profile-btn" class="btn-icon"><i data-lucide="x"></i></button>
+            </div>
+            
+            <div style="width: 80px; height: 80px; border-radius: 50%; background: var(--bg-surface); margin: 0 auto 16px; display: flex; align-items: center; justify-content: center; font-size: 32px; color: var(--text-primary);" id="profile-avatar-display">
+                ?
+            </div>
+            
+            <div style="background: rgba(0, 255, 170, 0.1); border: 1px solid rgba(0, 255, 170, 0.3); border-radius: 8px; padding: 16px; margin-bottom: 24px;">
+                <p style="margin: 0 0 8px 0; font-size: 12px; color: var(--text-secondary); text-transform: uppercase;">Your Unique Kuruvi ID</p>
+                <div style="display: flex; justify-content: center; align-items: center; gap: 12px;">
+                    <span id="profile-unique-id" style="font-size: 24px; font-weight: 600; font-family: monospace; letter-spacing: 1px; color: var(--accent-cyan); user-select: all;">unknown#0000</span>
+                    <button class="btn-icon" title="Copy to clipboard" onclick="navigator.clipboard.writeText(document.getElementById('profile-unique-id').textContent)"><i data-lucide="copy" style="width: 16px; height: 16px;"></i></button>
+                </div>
+                <p style="margin: 8px 0 0 0; font-size: 13px; color: var(--text-secondary);">Share this code so friends can find you securely.</p>
+            </div>
+
+            <div style="text-align: left; margin-bottom: 24px;">
+                <label style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; display: block;">Update Username (2-minute limit)</label>
+                <div style="display: flex; gap: 8px;">
+                    <input type="text" id="profile-username-input" class="input-field" placeholder="New Display Name" style="flex: 1;">
+                    <button id="save-username-btn" class="btn-primary" style="width: auto; padding: 0 20px;">Save</button>
+                </div>
+                <div id="profile-error" style="color: var(--danger); font-size: 13px; margin-top: 8px; min-height: 20px;"></div>
+            </div>
+
+            <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 24px;">
+                <button id="logout-btn" class="btn-primary" style="background: transparent; border: 1px solid var(--danger); color: var(--danger);">Sign Out</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Create Group Modal ═══ -->
+    <div id="group-modal" class="modal-overlay hidden">
+        <div class="modal-content glass" style="text-align: center;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+                <h2 style="margin: 0; font-size: 20px;">Create a New Group</h2>
+                <button id="close-group-btn" class="btn-icon"><i data-lucide="x"></i></button>
+            </div>
+            <div style="text-align: left; margin-bottom: 24px;">
+                <label style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; display: block;">Group Name</label>
+                <div style="display: flex; gap: 8px;">
+                    <input type="text" id="group-name-input" class="input-field" placeholder="E.g., Crypto Traders" style="flex: 1;">
+                    <button id="create-group-btn" class="btn-primary" style="width: auto; padding: 0 20px;">Create</button>
+                </div>
+                <div id="group-error" style="color: var(--danger); font-size: 13px; margin-top: 8px; min-height: 20px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Password Reset Modal ═══ -->
+    <div id="reset-modal" class="modal-overlay hidden">
+        <div class="modal-content glass" style="text-align: center;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+                <h2 style="margin: 0; font-size: 20px;">Reset Password</h2>
+                <button id="close-reset-btn" class="btn-icon"><i data-lucide="x"></i></button>
+            </div>
+            <div style="text-align: left; margin-bottom: 24px; display: flex; flex-direction: column; gap: 12px;">
+                <p style="font-size: 13px; color: var(--text-secondary); margin: 0;">Enter your username, phone, or email and your new password to reset it.</p>
+                
+                <input type="text" id="reset-identifier" class="input-field" placeholder="Username, Email, or Phone">
+                
+                <div style="position: relative;">
+                    <input type="password" id="reset-password" class="input-field" placeholder="New Password" style="width: 100%; padding-right: 40px;">
+                    <button type="button" class="btn-icon toggle-password" data-target="reset-password" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; background: transparent; padding: 0; outline: none; border: none; color: var(--accent-cyan);"><i data-lucide="eye"></i></button>
+                </div>
+
+                <button id="submit-reset-btn" class="btn-primary" style="margin-top: 8px;">Reset Password</button>
+                <div id="reset-error" style="color: var(--danger); font-size: 13px; min-height: 20px;"></div>
+            </div>
+        </div>
     </div>
 
     <!-- Scripts -->

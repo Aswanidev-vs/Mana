@@ -83,6 +83,7 @@ body {
   font-weight: 700;
   background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
@@ -155,6 +156,31 @@ body {
   background: var(--success);
   border: 2px solid var(--bg-secondary);
   border-radius: 50%;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+}
+
+.online-indicator.offline {
+  background: #475569;
+  box-shadow: none;
+}
+
+.status-tag {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 10px;
+  letter-spacing: 0.05em;
+}
+
+.status-tag.online {
+  color: var(--success);
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.status-tag.offline {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .contact-info {
@@ -396,6 +422,48 @@ body {
 .btn-end-call {
   background: var(--danger);
   color: white;
+}
+
+/* ━━ LOGIN TABS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+#login-tabs {
+  display: flex;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 4px;
+  border-radius: var(--radius-sm);
+}
+
+.login-tab {
+  flex: 1;
+  padding: 10px 16px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.login-tab:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.login-tab.active {
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
+  color: white;
+}
+
+.login-form {
+  display: none;
+}
+
+.login-form.active {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 /* ━━ UTILS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */

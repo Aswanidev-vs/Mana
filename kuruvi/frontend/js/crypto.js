@@ -36,7 +36,11 @@ const Crypto = {
 
     async encrypt(text, remotePeerID) {
         const remoteKey = this.remoteKeys.get(remotePeerID);
-        if (!remoteKey) throw new Error('No public key for peer');
+        if (!remoteKey) {
+            const err = new Error('Missing public key');
+            err.code = 'ERR_NO_KEY';
+            throw err;
+        }
 
         const sharedKey = await this.deriveSharedKey(remoteKey);
         const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -57,19 +61,28 @@ const Crypto = {
 
     async decrypt(combinedData, remotePeerID) {
         const remoteKey = this.remoteKeys.get(remotePeerID);
-        if (!remoteKey) throw new Error('No public key for peer');
+        if (!remoteKey) {
+            const err = new Error('Missing public key');
+            err.code = 'ERR_NO_KEY';
+            throw err;
+        }
 
         const sharedKey = await this.deriveSharedKey(remoteKey);
         const data = new Uint8Array(combinedData);
         const iv = data.slice(0, 12);
         const ciphertext = data.slice(12);
 
-        const decrypted = await crypto.subtle.decrypt(
-            { name: 'AES-GCM', iv },
-            sharedKey,
-            ciphertext
-        );
-
-        return new TextDecoder().decode(decrypted);
+        try {
+            const decrypted = await crypto.subtle.decrypt(
+                { name: 'AES-GCM', iv },
+                sharedKey,
+                ciphertext
+            );
+            return new TextDecoder().decode(decrypted);
+        } catch (e) {
+            const err = new Error('Decryption failed');
+            err.code = 'ERR_DECRYPT_FAILED';
+            throw err;
+        }
     }
 };
