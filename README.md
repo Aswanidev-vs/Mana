@@ -1,6 +1,6 @@
-# Mana
-
 Mana is a Go framework for building real-time communication apps with WebSocket messaging, signaling, rooms, notifications, and WebRTC building blocks.
+
+**Live Documentation & Examples**: [aswanidev-vs.github.io/Mana/](https://aswanidev-vs.github.io/Mana/)
 
 It is designed for projects like:
 
@@ -16,6 +16,7 @@ Mana is in an early framework stage: strong enough for prototypes, demos, intern
 
 Start here depending on what you need:
 
+- [**Live Documentation Website**](https://aswanidev-vs.github.io/Mana/): High-fidelity interactive guides and examples
 - [api/api.md](api/api.md): developer guide and implementation manual
 - [prd.md](prd.md): product scope and original vision
 - [timeline.md](timeline.md): progress and roadmap
@@ -203,6 +204,7 @@ go test -run ^$ -bench . -benchmem ./...
 
 ## Docs
 
+- [**Live Documentation & Examples**](https://aswanidev-vs.github.io/Mana/)
 - [api/api.md](api/api.md)
 - [prd.md](prd.md)
 - [timeline.md](timeline.md)
