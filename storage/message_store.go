@@ -1,15 +1,18 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Aswanidev-vs/mana/core"
+	"github.com/Aswanidev-vs/mana/storage/db"
 )
 
 type DeliveryState string
@@ -30,15 +33,24 @@ type snapshot struct {
 	Messages []StoredMessage `json:"messages"`
 }
 
-type MessageStore struct {
+type JSONMessageStore struct {
 	mu       sync.RWMutex
 	path     string
 	messages []StoredMessage
 	nextSeq  uint64
 }
 
-func NewMessageStore(path string) (*MessageStore, error) {
-	store := &MessageStore{
+// NewMessageStore creates a new message store.
+func NewMessageStore(path string) (core.MessageStore, error) {
+	if strings.HasSuffix(path, ".db") || strings.HasSuffix(path, ".sqlite") {
+		backend, err := db.NewBackend(db.SQLite, path)
+		if err != nil {
+			return nil, err
+		}
+		return NewSQLMessageStore(backend)
+	}
+
+	store := &JSONMessageStore{
 		path:     path,
 		messages: make([]StoredMessage, 0),
 	}
@@ -51,7 +63,7 @@ func NewMessageStore(path string) (*MessageStore, error) {
 	return store, nil
 }
 
-func (s *MessageStore) SaveMessage(msg core.Message, recipients []string) (core.Message, error) {
+func (s *JSONMessageStore) SaveMessage(ctx context.Context, msg core.Message, recipients []string) (core.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -83,11 +95,11 @@ func (s *MessageStore) SaveMessage(msg core.Message, recipients []string) (core.
 	return msg, s.persistLocked()
 }
 
-func (s *MessageStore) MarkDelivered(messageID, userID string) error {
+func (s *JSONMessageStore) MarkDelivered(ctx context.Context, messageID, userID string) error {
 	return s.updateDelivery(messageID, userID, DeliveryDelivered)
 }
 
-func (s *MessageStore) PendingForUser(userID string) []core.Message {
+func (s *JSONMessageStore) PendingForUser(ctx context.Context, userID string) []core.Message {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -100,7 +112,7 @@ func (s *MessageStore) PendingForUser(userID string) []core.Message {
 	return pending
 }
 
-func (s *MessageStore) SyncForUserSince(userID string, since time.Time) []core.Message {
+func (s *JSONMessageStore) SyncForUserSince(ctx context.Context, userID string, since time.Time) []core.Message {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -116,8 +128,7 @@ func (s *MessageStore) SyncForUserSince(userID string, since time.Time) []core.M
 	return result
 }
 
-// SyncForUserAfterSequence returns up to limit messages for a user after a cursor.
-func (s *MessageStore) SyncForUserAfterSequence(userID string, after uint64, limit int) ([]core.Message, bool) {
+func (s *JSONMessageStore) SyncForUserAfterSequence(ctx context.Context, userID string, after uint64, limit int) ([]core.Message, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -143,8 +154,7 @@ func (s *MessageStore) SyncForUserAfterSequence(userID string, after uint64, lim
 	return result, hasMore
 }
 
-// LatestSequenceForUser returns the highest known message sequence visible to the user.
-func (s *MessageStore) LatestSequenceForUser(userID string) uint64 {
+func (s *JSONMessageStore) LatestSequenceForUser(ctx context.Context, userID string) uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -160,7 +170,7 @@ func (s *MessageStore) LatestSequenceForUser(userID string) uint64 {
 	return latest
 }
 
-func (s *MessageStore) updateDelivery(messageID, userID string, state DeliveryState) error {
+func (s *JSONMessageStore) updateDelivery(messageID, userID string, state DeliveryState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -180,7 +190,7 @@ func (s *MessageStore) updateDelivery(messageID, userID string, state DeliverySt
 	return nil
 }
 
-func (s *MessageStore) load() error {
+func (s *JSONMessageStore) load() error {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -202,7 +212,7 @@ func (s *MessageStore) load() error {
 	return nil
 }
 
-func (s *MessageStore) persistLocked() error {
+func (s *JSONMessageStore) persistLocked() error {
 	if s.path == "" {
 		return nil
 	}

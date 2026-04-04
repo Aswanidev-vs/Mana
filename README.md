@@ -37,6 +37,8 @@ Start here depending on what you need:
 - E2EE primitives and X3DH-style key exchange helpers
 - Multi-session and device-aware connection tracking
 - Durable message store and cursor-based reconnect sync
+- Plug-and-play SQL "Batteries" (PostgreSQL, MySQL, SQLite) for Messaging, Identity, Social, and Settings
+- Shared DB Transactions enabled via context-aware operations
 - Stateless multi-node signal fanout via memory, Redis, or NATS backends
 - TURN-aware WebRTC config with ICE relay policy and network recovery hooks
 
@@ -194,6 +196,7 @@ go test -run ^$ -bench . -benchmem ./...
 
 - [cmd/example](cmd/example)
 - [examples/full](examples/full)
+- [examples/custom_db](examples/custom_db) (Database Integration & Shared Transactions)
 - [examples/notification](examples/notification)
 - [examples/sfu](examples/sfu)
 - tmp telegram-clone

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kuruvi — Premium Messenger</title>
+    <link rel="stylesheet" href="css/style.css">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+
+    <!-- ═══ Login Modal ═══ -->
+    <div id="login-modal" class="modal-overlay">
+        <div class="modal-content glass">
+            <h1 class="logo-text">Kuruvi</h1>
+            <p style="color: var(--text-secondary); margin-top: -12px; font-size: 14px;">Secure. Real-time. Beautiful.</p>
+            
+            <div id="auth-form" style="display: flex; flex-direction: column; gap: 16px;">
+                <input type="text" id="username" class="input-field" placeholder="Username" autocomplete="username">
+                <input type="password" id="password" class="input-field" placeholder="Password" autocomplete="current-password">
+                <button id="login-btn" class="btn-primary">Sign In</button>
+                <p style="font-size: 13px; color: var(--text-secondary);">
+                    New here? <a href="#" id="toggle-auth" style="color: var(--accent-cyan); text-decoration: none;">Create an account</a>
+                </p>
+                <div id="auth-error" style="color: var(--danger); font-size: 13px; min-height: 20px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ App Interface ═══ -->
+    <div id="app" class="hidden">
+        <!-- Sidebar -->
+        <aside id="sidebar">
+            <div class="sidebar-header">
+                <h1 class="logo-text" style="font-size: 20px;">Kuruvi</h1>
+                <div style="display: flex; gap: 8px;">
+                    <button class="btn-icon" title="New Group"><i data-lucide="users"></i></button>
+                    <button class="btn-icon" id="profile-btn"><i data-lucide="circle-user"></i></button>
+                    <button class="btn-icon" id="logout-btn"><i data-lucide="log-out"></i></button>
+                </div>
+            </div>
+
+            <div class="search-container">
+                <input type="text" class="search-input" placeholder="Search chats or users...">
+            </div>
+
+            <div class="contact-list" id="contact-list">
+                <!-- Contacts will be injected here -->
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main id="main-chat">
+            <div id="no-chat-state" style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-secondary); text-align: center; padding: 40px;">
+                <div style="width: 120px; height: 120px; border-radius: 50%; background: var(--bg-surface); display: flex; align-items: center; justify-content: center; margin-bottom: 24px;">
+                    <i data-lucide="message-square" style="width: 60px; height: 60px; opacity: 0.5;"></i>
+                </div>
+                <h3>Welcome to Kuruvi</h3>
+                <p style="max-width: 300px; margin-top: 12px; font-size: 14px;">Select a contact to start messaging. All chats are end-to-end encrypted.</p>
+            </div>
+
+            <div id="chat-active" class="hidden" style="flex: 1; display: flex; flex-direction: column;">
+                <header class="chat-header glass">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <div class="avatar" id="active-chat-avatar">?</div>
+                        <div>
+                            <div class="contact-name" id="active-chat-name">Contact Name</div>
+                            <div class="contact-last-msg" id="active-chat-status">Online</div>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 4px;">
+                        <button class="btn-icon" id="voice-call-btn"><i data-lucide="phone"></i></button>
+                        <button class="btn-icon" id="video-call-btn"><i data-lucide="video"></i></button>
+                        <button class="btn-icon"><i data-lucide="more-vertical"></i></button>
+                    </div>
+                </header>
+
+                <div class="chat-messages" id="message-container">
+                    <!-- Messages injected here -->
+                </div>
+
+                <div id="typing-indicator" style="padding: 0 24px 8px; font-size: 12px; color: var(--accent-cyan); height: 20px;"></div>
+
+                <footer class="input-bar glass">
+                    <button class="btn-icon"><i data-lucide="plus"></i></button>
+                    <input type="text" id="message-input" class="message-input" placeholder="Type a message...">
+                    <button class="btn-icon btn-send" id="send-btn"><i data-lucide="send"></i></button>
+                </footer>
+            </div>
+
+            <!-- Call Overlay -->
+            <div id="call-overlay" class="call-overlay hidden">
+                <div class="video-grid" id="video-grid">
+                    <!-- Video streams here -->
+                </div>
+                <div class="call-controls">
+                    <button class="btn-call-action glass" id="toggle-mic"><i data-lucide="mic"></i></button>
+                    <button class="btn-call-action glass" id="toggle-video"><i data-lucide="video"></i></button>
+                    <button class="btn-call-action btn-end-call" id="end-call-btn"><i data-lucide="phone-off"></i></button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/api.js"></script>
+    <script src="js/crypto.js"></script>
+    <script src="js/rtc.js"></script>
+    <script src="js/app.js"></script>
+    <script>
+        // Init Lucide
+        lucide.createIcons();
+    </script>
+</body>
+</html>

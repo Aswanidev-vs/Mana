@@ -2,6 +2,7 @@ package mana
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,8 +22,11 @@ import (
 	"github.com/Aswanidev-vs/mana/product"
 	"github.com/Aswanidev-vs/mana/room"
 	"github.com/Aswanidev-vs/mana/rtc"
+	"github.com/Aswanidev-vs/mana/settings"
 	"github.com/Aswanidev-vs/mana/signaling"
+	"github.com/Aswanidev-vs/mana/social"
 	"github.com/Aswanidev-vs/mana/storage"
+	"github.com/Aswanidev-vs/mana/storage/db"
 	"github.com/Aswanidev-vs/mana/ws"
 
 	"github.com/pion/webrtc/v4"
@@ -53,10 +57,20 @@ type App struct {
 	// Observability
 	logger  *observ.Logger
 	metrics *observ.Metrics
-	store   *storage.MessageStore
+	store   core.MessageStore
+	account core.AccountStore
+	profile core.ProfileStore
+	contact core.ContactStore
+	device  core.DeviceStore
+	prefs   core.PreferenceStore
 	product *product.Store
 	tracing *observ.Tracing
 	cluster cluster.Backend
+	backend *db.Backend
+
+	// Logic Hooks
+	onAccountCreated func(ctx context.Context, user core.User)
+	onMessageStored  func(ctx context.Context, msg core.Message)
 
 	// Session tracking
 	mu           sync.RWMutex
@@ -84,11 +98,6 @@ func New(cfg core.Config) *App {
 	if err != nil {
 		panic(fmt.Errorf("create message store: %w", err))
 	}
-	productStore, err := product.NewStore(cfg.ProductStorePath, cfg.AttachmentDir)
-	if err != nil {
-		panic(fmt.Errorf("create product store: %w", err))
-	}
-
 	if warnings := cfg.Validate(); len(warnings) > 0 {
 		for _, w := range warnings {
 			logger.Warn("Config: %s", w)
@@ -96,22 +105,31 @@ func New(cfg core.Config) *App {
 	}
 
 	hub := signaling.NewHub()
-
 	app := &App{
 		config:       cfg,
 		roomManager:  room.NewManager(),
 		signalHub:    hub,
 		rtcManager:   rtc.NewManagerWithICEServers(cfg.STUNServers, cfg.TURNServers, cfg.ICETransportPolicy),
 		callManager:  rtc.NewCallManager(),
-		sessions:     make(map[string]*room.UserSession),
-		userSessions: make(map[string]map[string]*room.UserSession),
-		deviceCursor: make(map[string]uint64),
 		mux:          http.NewServeMux(),
 		logger:       logger,
 		metrics:      metrics,
 		store:        store,
-		product:      productStore,
 		notifHub:     notification.NewHub(logger),
+		sessions:     make(map[string]*room.UserSession),
+		userSessions: make(map[string]map[string]*room.UserSession),
+		deviceCursor: make(map[string]uint64),
+	}
+
+	// Default database initialization if DSN is provided
+	if cfg.DatabaseDSN != "" && app.backend == nil {
+		backend, err := db.NewBackend(cfg.DatabaseDriver, cfg.DatabaseDSN)
+		if err != nil {
+			logger.Error("failed to initialize centralized database: %v", err)
+		} else {
+			app.backend = backend
+			app.initializeDefaultStores(backend)
+		}
 	}
 
 	if cfg.EnableTracing {
@@ -236,8 +254,55 @@ func (a *App) KeyExchange() *e2ee.HandshakeManager { return a.keyExchange }
 func (a *App) CallManager() *rtc.CallManager       { return a.callManager }
 func (a *App) Logger() *observ.Logger              { return a.logger }
 func (a *App) NotificationHub() *notification.Hub  { return a.notifHub }
-func (a *App) MessageStore() *storage.MessageStore { return a.store }
-func (a *App) ProductStore() *product.Store        { return a.product }
+func (a *App) MessageStore() core.MessageStore { return a.store }
+func (a *App) AccountStore() core.AccountStore { return a.account }
+func (a *App) ProfileStore() core.ProfileStore { return a.profile }
+func (a *App) ContactStore() core.ContactStore { return a.contact }
+func (a *App) DeviceStore() core.DeviceStore   { return a.device }
+func (a *App) PreferenceStore() core.PreferenceStore { return a.prefs }
+func (a *App) DBBackend() *db.Backend { return a.backend }
+
+// --- Dependency Injection & Database Setters ---
+
+func (a *App) WithDatabase(dbConn *sql.DB, driver string) *App {
+	backend, err := db.NewBackendFromDB(dbConn, driver)
+	if err != nil {
+		a.logger.Error("WithDatabase: %v", err)
+		return a
+	}
+	a.backend = backend
+	a.initializeDefaultStores(backend)
+	return a
+}
+
+func (a *App) initializeDefaultStores(backend *db.Backend) {
+	prefix := a.config.DatabaseTablePrefix
+	if a.store == nil {
+		a.store, _ = storage.NewSQLMessageStoreWithPrefix(backend, prefix)
+	}
+	if a.account == nil {
+		a.account, _ = auth.NewSQLAccountStoreWithPrefix(backend, prefix)
+	}
+	if a.profile == nil {
+		socialStore, _ := social.NewSQLSocialStoreWithPrefix(backend, prefix)
+		a.profile = socialStore
+		a.contact = socialStore
+		// Default implementations for others if not provided
+		a.prefs, _ = settings.NewSQLPreferenceStoreWithPrefix(backend, prefix)
+	}
+}
+
+func (a *App) WithMessageStore(s core.MessageStore) *App { a.store = s; return a }
+func (a *App) WithAccountStore(s core.AccountStore) *App { a.account = s; return a }
+func (a *App) WithProfileStore(s core.ProfileStore) *App { a.profile = s; return a }
+func (a *App) WithContactStore(s core.ContactStore) *App { a.contact = s; return a }
+func (a *App) WithDeviceStore(s core.DeviceStore) *App   { a.device = s; return a }
+func (a *App) WithPreferenceStore(s core.PreferenceStore) *App { a.prefs = s; return a }
+
+// --- Logic Hooks ---
+
+func (a *App) OnAccountCreated(h func(context.Context, core.User))   { a.onAccountCreated = h }
+func (a *App) OnMessageStored(h func(context.Context, core.Message)) { a.onMessageStored = h }
 
 // --- Server lifecycle ---
 
@@ -438,11 +503,15 @@ func (a *App) onWSMessage(peerID, username, userRole string, data []byte) {
 func (a *App) handleFrameworkMessage(msg core.Message) {
 	recipients := a.messageRecipients(msg)
 	conversationID := messageConversationID(msg)
-	stored, err := a.store.SaveMessage(msg, recipients)
+	stored, err := a.store.SaveMessage(context.Background(), msg, recipients)
 	if err != nil {
 		a.logger.Error("persist message %s: %v", msg.ID, err)
 	} else {
 		msg = stored
+		// Trigger logic hook if registered
+		if a.onMessageStored != nil {
+			a.onMessageStored(context.Background(), msg)
+		}
 		_ = a.product.UpsertConversation(product.Conversation{
 			ID:           conversationID,
 			IsGroup:      msg.RoomID != "",
@@ -452,7 +521,7 @@ func (a *App) handleFrameworkMessage(msg core.Message) {
 		_ = a.product.AddMessage(conversationID, msg)
 		for _, recipient := range recipients {
 			if a.isUserOnline(recipient) {
-				_ = a.store.MarkDelivered(msg.ID, recipient)
+				_ = a.store.MarkDelivered(context.Background(), msg.ID, recipient)
 				_ = a.product.MarkDelivered(msg.ID, recipient)
 			}
 		}
@@ -503,8 +572,8 @@ func (a *App) replayOfflineSync(session *room.UserSession, requestedCursor uint6
 		cursor = requestedCursor
 	}
 
-	messages, hasMore := a.store.SyncForUserAfterSequence(session.UserID, cursor, limit)
-	pending := a.store.PendingForUser(session.UserID)
+	messages, hasMore := a.store.SyncForUserAfterSequence(context.Background(), session.UserID, cursor, limit)
+	pending := a.store.PendingForUser(context.Background(), session.UserID)
 	if len(messages) == 0 && len(pending) > 0 {
 		messages = pending
 	}
@@ -531,7 +600,7 @@ func (a *App) replayOfflineSync(session *room.UserSession, requestedCursor uint6
 	if err := session.Conn.Write(ctx, payload); err == nil {
 		maxSeq := cursor
 		for _, message := range messages {
-			_ = a.store.MarkDelivered(message.ID, session.UserID)
+			_ = a.store.MarkDelivered(context.Background(), message.ID, session.UserID)
 			if message.Sequence > maxSeq {
 				maxSeq = message.Sequence
 			}

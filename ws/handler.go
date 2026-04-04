@@ -53,10 +53,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Authentication
 	userID, username, userRole := h.authenticate(r)
 	if h.config.EnableAuth && userID == "" {
+		fmt.Printf("[WS] Authentication failed for remote %s\n", r.RemoteAddr)
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
 	sessionID := buildSessionID(userID, r.URL.Query().Get("device_id"))
+	fmt.Printf("[WS] Authenticated user: %s (session: %s, role: %s)\n", userID, sessionID, userRole)
 
 	// WebSocket upgrade
 	conn, err := h.config.Acceptor.Accept(w, r, AcceptConfig{
@@ -123,6 +125,7 @@ func (h *Handler) authenticate(r *http.Request) (userID, username, userRole stri
 
 		claims, err := h.config.JWTAuth.ValidateToken(tokenStr)
 		if err != nil {
+			fmt.Printf("[WS] JWT validation error: %v\n", err)
 			return "", "", ""
 		}
 

@@ -111,6 +111,14 @@ type Config struct {
 	NATSURL     string `json:"nats_url"`
 	NATSSubject string `json:"nats_subject"`
 
+	// Database settings for centralized persistence.
+	// Driver can be "sqlite", "postgres", or "mysql".
+	DatabaseDriver string `json:"database_driver"`
+	// DSN is the data source name (e.g., file path for sqlite or connection string for postgres/mysql).
+	DatabaseDSN string `json:"database_dsn"`
+	// DatabaseTablePrefix is an optional prefix for all Mana tables (e.g., "mana_").
+	DatabaseTablePrefix string `json:"database_table_prefix"`
+
 	// Tracing controls built-in OpenTelemetry instrumentation.
 	EnableTracing    bool    `json:"enable_tracing"`
 	TraceSampleRatio float64 `json:"trace_sample_ratio"`
@@ -160,6 +168,8 @@ func DefaultConfig() Config {
 		TraceSampleRatio:        1,
 		ServiceName:             "mana",
 		ServiceVersion:          "dev",
+		DatabaseDriver:          "sqlite",
+		DatabaseDSN:             "mana.db",
 	}
 }
 

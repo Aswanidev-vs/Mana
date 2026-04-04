@@ -1,5 +1,22 @@
 # Mana Project Timeline & Completion Status
 
+## Executive Summary
+
+### 🚀 New Things Added
+- **Production DB Architecture:** Plug-and-play SQL "Batteries" (Postgres, MySQL, SQLite) for Messaging, Identity, Social, and Settings.
+- **Shared DB Transactions:** `WithTx` mapping, allowing Mana updates and your own custom app logic to share single, atomic database transactions.
+- **Table Prefixing:** Added `DatabaseTablePrefix` to safely isolate framework tables alongside your custom tables.
+
+### ⏳ In Progress
+- **RTC Hardening:** Stabilizing ICE restarts, server-side offer generation, and signal routing.
+- **Multi-Device Architecture:** Per-device session tracking and direct fanout to multiple device IDs.
+
+### 🔮 To Be Added (Future)
+- **Advanced E2EE (Phase 13):** WhatsApp-grade security model, Double ratchet protocol, and forward secrecy.
+- **Developer CLI (Phase 15):** `mana init` and `mana run` CLI tools for rapid scaffolding.
+- **Cross-device State:** Finalizing conflict-free offline sync state for read/unread receipts across devices.
+
+---
 | Phase | Tasks | Status | Completion |
 |---|---|---|---|
 | **Phase 1: Security Fixes** | MaxMessageSize, AllowedOrigins, RateLimit, TLS support, origin validation, JWT enforcement | ✅ Completed | 100% |
@@ -12,6 +29,7 @@
 | **Phase 8: Distributed Scaling** | Cluster backends (memory, Redis, NATS), multi-node pub-sub fanout | ✅ Completed | 100% |
 | **Phase 9: Observability Enhancement** | OpenTelemetry tracing, in-memory span export, HTTP tracing middleware | ✅ Completed | 100% |
 | **Phase 10: Deployment Infrastructure** | Kubernetes deployment manifests, Docker support | ✅ Completed | 100% |
+| **Phase 11.5: Production DB Architecture** | Plug-and-play SQL "Batteries" (Postgres, MySQL, SQLite) for Messaging, Identity, Social, Settings. Shared transactions via context, Table prefixing. | ✅ Completed | 100% |
 
 **Overall Project Status: strong MVP / framework-complete base, moving toward production-ready**
 
@@ -93,8 +111,9 @@ The items below are the next major milestones needed to move Mana toward a Whats
 
 | Future Phase | Status | Completion | Implemented In This Repo |
 |---|---|---|---|
-| **Phase 11: Durable Messaging & Offline Sync** | ⚠️ Partially Implemented | 60% | File-backed message store, delivery tracking, reconnect sync batch, offline replay on reconnect |
+| **Phase 11: Durable Messaging & Offline Sync** | ✅ Implemented | 100% | Context-aware SQL message store, delivery tracking, offline replay, Postgres/MySQL/SQLite "Batteries" |
 | **Phase 12: Multi-Device Architecture** | ⚠️ Partially Implemented | 55% | Session IDs with device suffixes, per-user multi-session tracking, direct fanout to all user sessions, room multi-session support |
+| **Phase 13: Identity & Social Stores** | ✅ Implemented | 100% | SQL-based Account management, Profiles, Contacts, blocking |
 | **Phase 14: RTC Hardening** | ⚠️ Partially Implemented | 50% | ICE restart signal, server-side ICE restart offer generation, session-aware RTC identity handling, call lifecycle routing improvements |
 
 Implemented evidence:
