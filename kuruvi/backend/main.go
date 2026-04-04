@@ -178,20 +178,36 @@ func main() {
 
 	// 5. Static Files & Frontend SPA Routing
 	frontendPath := "../frontend"
+	frontendAbs, err := filepath.Abs(frontendPath)
+	if err != nil {
+		log.Fatalf("Failed to resolve frontend path: %v", err)
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		if path == "/" {
 			path = "/index.html"
 		}
 
-		fullPath := filepath.Join(frontendPath, path)
 		if strings.HasPrefix(path, "/api/") || path == "/ws" || path == "/health" {
 			return // Let other handlers handle these
 		}
 
+		fullPath, err := filepath.Abs(filepath.Join(frontendAbs, path))
+		if err != nil {
+			http.Error(w, "Invalid path", http.StatusBadRequest)
+			return
+		}
+
+		// Ensure the resolved path is within the frontend directory to prevent directory traversal
+		frontendPrefix := frontendAbs + string(os.PathSeparator)
+		if fullPath != frontendAbs && !strings.HasPrefix(fullPath, frontendPrefix) {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 			// SPA fallback
-			http.ServeFile(w, r, filepath.Join(frontendPath, "index.html"))
+			http.ServeFile(w, r, filepath.Join(frontendAbs, "index.html"))
 			return
 		}
 		http.ServeFile(w, r, fullPath)
