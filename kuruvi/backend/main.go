@@ -823,6 +823,94 @@ func main() {
 		}
 	}))
 
+	// 4g. Delete Group (admin only)
+	mux.HandleFunc("/api/group/delete", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		selfID, _ := resolveUserContext(r, app.JWTAuth())
+		if selfID == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		roomID := r.URL.Query().Get("room_id")
+		if roomID == "" {
+			http.Error(w, "room_id required", http.StatusBadRequest)
+			return
+		}
+
+		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
+		if err != nil {
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+		defer dbConn.Close()
+
+		// Verify caller is admin
+		var role string
+		_ = dbConn.QueryRow("SELECT role FROM kuruvi_group_members WHERE room_id = ? AND user_id = ?", roomID, selfID).Scan(&role)
+		if role != "admin" {
+			http.Error(w, "Forbidden: Only admins can delete groups", http.StatusForbidden)
+			return
+		}
+
+		// Delete all members, then the group
+		_, _ = dbConn.Exec("DELETE FROM kuruvi_group_members WHERE room_id = ?", roomID)
+		_, _ = dbConn.Exec("DELETE FROM kuruvi_groups WHERE room_id = ?", roomID)
+
+		log.Printf("[Group] Admin %s deleted group %s", selfID, roomID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+	}))
+
+	// 4h. Leave Group (any member)
+	mux.HandleFunc("/api/group/leave", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		selfID, _ := resolveUserContext(r, app.JWTAuth())
+		if selfID == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		roomID := r.URL.Query().Get("room_id")
+		if roomID == "" {
+			http.Error(w, "room_id required", http.StatusBadRequest)
+			return
+		}
+
+		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
+		if err != nil {
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+		defer dbConn.Close()
+
+		// Check if the user is the only admin — if so, they can't leave without deleting
+		var role string
+		_ = dbConn.QueryRow("SELECT role FROM kuruvi_group_members WHERE room_id = ? AND user_id = ?", roomID, selfID).Scan(&role)
+		if role == "admin" {
+			var adminCount int
+			_ = dbConn.QueryRow("SELECT COUNT(*) FROM kuruvi_group_members WHERE room_id = ? AND role = 'admin'", roomID).Scan(&adminCount)
+			if adminCount <= 1 {
+				http.Error(w, "You are the only admin. Transfer admin role or delete the group instead.", http.StatusConflict)
+				return
+			}
+		}
+
+		_, err = dbConn.Exec("DELETE FROM kuruvi_group_members WHERE room_id = ? AND user_id = ?", roomID, selfID)
+		if err != nil {
+			http.Error(w, "Failed to leave group", http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("[Group] User %s left group %s", selfID, roomID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "left"})
+	}))
+
 	// 5. Static Files & Frontend SPA Routing
 	frontendPath := "../frontend"
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -889,32 +977,36 @@ func main() {
 		}
 	})
 
-	// 7. Contacts API — list recently active users from the product store
-	mux.HandleFunc("/api/contacts", func(w http.ResponseWriter, r *http.Request) {
-		data, err := os.ReadFile(cfg.ProductStorePath)
-		if err != nil {
-			// Product store hasn't been written yet — return empty list
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]interface{}{})
-			return
-		}
+	// 7. Contacts API — list contacts AND groups the user belongs to
+	mux.HandleFunc("/api/contacts", cors(func(w http.ResponseWriter, r *http.Request) {
+		// Read product store snapshot for online status (optional — may not exist)
 		var snap product.Snapshot
-		if err := json.Unmarshal(data, &snap); err != nil {
-			http.Error(w, "store parse error", http.StatusInternalServerError)
-			return
+		data, snapErr := os.ReadFile(cfg.ProductStorePath)
+		if snapErr == nil {
+			_ = json.Unmarshal(data, &snap)
+		}
+		if snap.Devices == nil {
+			snap.Devices = make(map[string]map[string]product.Device)
+		}
+		if snap.Profiles == nil {
+			snap.Profiles = make(map[string]product.Profile)
 		}
 
 		now := time.Now()
 		const onlineCutoff = 5 * time.Minute
-		selfUserID := ""
-		tokenStr := auth.ExtractTokenFromQuery(r)
-		if tokenStr != "" && app.JWTAuth() != nil {
-			claims, _ := app.JWTAuth().ValidateToken(tokenStr)
-			if claims != nil {
-				selfUserID = claims.UserID
+
+		// Resolve user from token (header OR query)
+		selfUserID, _ := resolveUserContext(r, app.JWTAuth())
+		if selfUserID == "" {
+			// Fallback to query param for backward compat
+			tokenStr := auth.ExtractTokenFromQuery(r)
+			if tokenStr != "" && app.JWTAuth() != nil {
+				claims, _ := app.JWTAuth().ValidateToken(tokenStr)
+				if claims != nil {
+					selfUserID = claims.UserID
+				}
 			}
 		}
-
 		if selfUserID == "" {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
@@ -927,53 +1019,65 @@ func main() {
 		}
 		defer dbConn.Close()
 
-		// Query the persistent contacts table JOIN accounts for names
-		query := `
+		var contactsList []map[string]interface{}
+
+		// ── 1. Direct contacts ──
+		contactRows, err := dbConn.Query(`
 			SELECT kc.contact_id, a.username, kc.last_msg, kc.updated_at
 			FROM kuruvi_contacts kc
 			JOIN accounts a ON kc.contact_id = a.user_id
 			WHERE kc.user_id = ?
 			ORDER BY kc.updated_at DESC
-		`
-		rows, err := dbConn.Query(query, selfUserID)
-		if err != nil {
-			log.Printf("Contacts query error: %v", err)
-			http.Error(w, "query error", http.StatusInternalServerError)
-			return
-		}
-		// Use existing 'now' and 'onlineCutoff' from above
-		var contactsList []map[string]interface{}
-
-		for rows.Next() {
-			var contactID, username, lastMsg string
-			var updatedAt time.Time
-			if err := rows.Scan(&contactID, &username, &lastMsg, &updatedAt); err != nil {
-				continue
-			}
-
-			// Check Online Status from Framework Product Store Snapshot
-			status := "Offline"
-			if devices, ok := snap.Devices[contactID]; ok {
-				var lastSeen time.Time
-				for _, d := range devices {
-					if d.LastSeenAt.After(lastSeen) {
-						lastSeen = d.LastSeenAt
+		`, selfUserID)
+		if err == nil {
+			for contactRows.Next() {
+				var contactID, username, lastMsg string
+				var updatedAt time.Time
+				if err := contactRows.Scan(&contactID, &username, &lastMsg, &updatedAt); err != nil {
+					continue
+				}
+				status := "Offline"
+				if devices, ok := snap.Devices[contactID]; ok {
+					var lastSeen time.Time
+					for _, d := range devices {
+						if d.LastSeenAt.After(lastSeen) {
+							lastSeen = d.LastSeenAt
+						}
+					}
+					if now.Sub(lastSeen) <= onlineCutoff {
+						status = "Online"
 					}
 				}
-				if now.Sub(lastSeen) <= onlineCutoff {
-					status = "Online"
-				}
+				contactsList = append(contactsList, map[string]interface{}{
+					"id": contactID, "name": username, "status": status, "lastMsg": lastMsg,
+				})
 			}
-
-			contactsList = append(contactsList, map[string]interface{}{
-				"id":      contactID,
-				"name":    username,
-				"status":  status,
-				"lastMsg": lastMsg,
-			})
+			contactRows.Close()
 		}
 
-		// If list is empty, also include anyone currently online to help discovery
+		// ── 2. Groups the user belongs to ──
+		groupRows, err := dbConn.Query(`
+			SELECT g.room_id, g.name, g.created_at
+			FROM kuruvi_group_members gm
+			JOIN kuruvi_groups g ON gm.room_id = g.room_id
+			WHERE gm.user_id = ?
+			ORDER BY g.created_at DESC
+		`, selfUserID)
+		if err == nil {
+			for groupRows.Next() {
+				var roomID, groupName string
+				var createdAt time.Time
+				if err := groupRows.Scan(&roomID, &groupName, &createdAt); err != nil {
+					continue
+				}
+				contactsList = append(contactsList, map[string]interface{}{
+					"id": roomID, "name": groupName, "status": "Group", "lastMsg": "Group chat",
+				})
+			}
+			groupRows.Close()
+		}
+
+		// ── 3. Discovery fallback: include currently online users if no contacts ──
 		if len(contactsList) == 0 {
 			for userID, devices := range snap.Devices {
 				if userID == selfUserID {
@@ -986,20 +1090,25 @@ func main() {
 					}
 				}
 				if now.Sub(lastSeen) <= onlineCutoff {
-					p, _ := snap.Profiles[userID]
+					p := snap.Profiles[userID]
 					name := userID
 					if p.DisplayName != "" {
 						name = p.DisplayName
 					}
 					contactsList = append(contactsList, map[string]interface{}{
-						"id": userID, "name": name, "status": "Online", "lastMsg": "Say hi!"})
+						"id": userID, "name": name, "status": "Online", "lastMsg": "Say hi!",
+					})
 				}
 			}
 		}
 
+		if contactsList == nil {
+			contactsList = []map[string]interface{}{}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(contactsList)
-	})
+	}))
 
 	// 8. Presence & Message Logging hooks
 	app.OnUserJoin(func(roomID string, user core.User) {
