@@ -122,31 +122,33 @@ func (s *SQLKeyStore) LoadPreKeyBundle(ctx context.Context, userID string) (*Pub
 }
 
 func (s *SQLKeyStore) ConsumeOneTimePreKey(ctx context.Context, userID string) error {
-	// Load the bundle, clear one OPK, and save it back
-	bundle, err := s.LoadPreKeyBundle(ctx, userID)
-	if err != nil || bundle == nil {
-		return err
-	}
-	if len(bundle.OneTimePreKeys) == 0 {
-		return nil // No OPKs to consume
-	}
-
-	// Pop the first key (smallest ID)
-	var firstID uint32
-	var found bool
-	for id := range bundle.OneTimePreKeys {
-		if !found || id < firstID {
-			firstID = id
-			found = true
+	return s.backend.RunInTx(ctx, func(ctx context.Context) error {
+		// Load the bundle, clear one OPK, and save it back
+		bundle, err := s.LoadPreKeyBundle(ctx, userID)
+		if err != nil || bundle == nil {
+			return err
 		}
-	}
+		if len(bundle.OneTimePreKeys) == 0 {
+			return nil // No OPKs to consume
+		}
 
-	if found {
-		delete(bundle.OneTimePreKeys, firstID)
-		delete(bundle.OneTimePreKeysBytes, firstID)
-	}
+		// Pop the first key (smallest ID)
+		var firstID uint32
+		var found bool
+		for id := range bundle.OneTimePreKeys {
+			if !found || id < firstID {
+				firstID = id
+				found = true
+			}
+		}
 
-	return s.SavePreKeyBundle(ctx, userID, bundle)
+		if found {
+			delete(bundle.OneTimePreKeys, firstID)
+			delete(bundle.OneTimePreKeysBytes, firstID)
+		}
+
+		return s.SavePreKeyBundle(ctx, userID, bundle)
+	})
 }
 
 // --- Session State ---

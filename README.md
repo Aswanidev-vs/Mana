@@ -95,16 +95,16 @@ For a much more detailed implementation guide, including code examples for chat 
 Mana allows you to inject your existing `*sql.DB` pool and join shared transactions. You can wrap framework operations (like sending a receipt) and your own business logic (like updating a user's wallet) in a **single atomic transaction**. No more mismatched state between your app and the framework.
 
 ### 2. Advanced E2EE (X3DH + Double Ratchet)
-WhatsApp-grade security with **X3DH** and **Double Ratchet** protocol (via Mellium integration). It provides a full, self-healing encryption suite featuring forward secrecy and break-in recovery.
+WhatsApp-grade security with **X3DH** and **Double Ratchet** protocol (via Mellium integration). It provides an atomic, SQL-backed key store featuring forward secrecy and break-in recovery. **New**: Prekey consumption is now transactionally atomic to prevent race conditions in high-concurrency environments.
 
 ### 3. SFU-Oriented WebRTC
-The signaling hub is built for scale, featuring integrated ICE candidate management, jitter buffering, congestion control, and NACK handling for resilient media.
+The signaling hub is built for scale, featuring integrated ICE candidate management, jitter buffering, congestion control, and NACK handling for resilient media. **New**: The RTC manager now features global resource cleanup (`Close()`) wired into the framework's graceful shutdown procedure.
 
 ### 4. Zero-Config SQL Persistence
-Point Mana at a database DSN (PostgreSQL, MySQL, SQLite), and it will automatically handle table migrations and optimizations for messaging, identity, and social graphs.
+Point Mana at a database DSN (PostgreSQL, MySQL, SQLite), and it will automatically handle table migrations and optimizations for messaging, identity, and social graphs. Includes a clean `WithTx` and `RunInTx` API for shared atomicity between framework and business logic.
 
 ### 5. Multi-Device Sync & Distribution
-Device-aware connection tracking with cursor-based offline message replay, multi-session fanout, and stateless multi-node signal fanout using **Redis** or **NATS** backends.
+Device-aware connection tracking using standardized `::` session separators. Features cursor-based offline message replay, multi-session fanout, and stateless multi-node signal fanout using **Redis** or **NATS** backends.
 
 ---
 
@@ -164,7 +164,9 @@ Mana already includes a meaningful baseline:
 - rate limiting
 - maximum message size enforcement
 - TLS support
-- graceful connection cleanup
+- Structured transport logging (replaces raw fmt.Printf)
+- Atomic E2EE key consumption (transactional)
+- Graceful connection and RTC resource cleanup
 - E2EE primitives
 
 Important security boundaries:

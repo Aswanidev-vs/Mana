@@ -437,6 +437,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 	// E2EE cleanup is handled by the KeyStore (persistent storage)
 
+	if a.rtcManager != nil {
+		if err := a.rtcManager.Close(); err != nil {
+			a.logger.Error("failed to close RTC manager during shutdown: %v", err)
+		}
+	}
+
 	if a.backend != nil {
 		if err := a.backend.Close(); err != nil {
 			a.logger.Error("failed to close database backend during shutdown: %v", err)
@@ -677,6 +683,11 @@ func (a *App) replayOfflineSync(session *room.UserSession, requestedCursor uint6
 
 // --- RTC signaling (extracted from app.go) ---
 
+const (
+	defaultSignalTimeout = 10 * time.Second
+	longSignalTimeout    = 30 * time.Second
+)
+
 func (a *App) setupRTCSignaling() {
 	a.callManager.OnCallEvent(func(event core.CallEvent) {
 		switch event.Status {
@@ -692,44 +703,60 @@ func (a *App) setupRTCSignaling() {
 	})
 
 	a.rtcManager.SetOnTrack(func(peerID, roomID, trackID string) {
-		ctx := context.Background()
-		a.signalHub.BroadcastToRoom(ctx, roomID, peerID, core.Signal{
+		ctx, cancel := context.WithTimeout(context.Background(), defaultSignalTimeout)
+		defer cancel()
+		if err := a.signalHub.BroadcastToRoom(ctx, roomID, peerID, core.Signal{
 			Type: "track_added", From: peerID, RoomID: roomID, Payload: []byte(trackID),
-		})
+		}); err != nil {
+			a.logger.Error("SFU: Failed to broadcast track_added signal: %v", err)
+		}
 	})
 	a.rtcManager.SetOnRecoveryNeeded(func(peerID, roomID, reason string) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), defaultSignalTimeout)
 		defer cancel()
 		offer, err := a.rtcManager.RestartICE(peerID)
 		if err != nil {
+			a.logger.Error("SFU: Failed to restart ICE for %s: %v", peerID, err)
 			return
 		}
-		_ = a.signalHub.Send(ctx, core.Signal{
+		if err := a.signalHub.Send(ctx, core.Signal{
 			Type:    core.SignalOffer,
 			From:    "SFU",
 			To:      peerID,
 			RoomID:  roomID,
 			SDP:     offer.SDP,
 			Payload: []byte(reason),
-		})
+		}); err != nil {
+			a.logger.Error("SFU: Failed to send ICE restart offer to %s: %v", peerID, err)
+		}
 	})
 
 	a.signalHub.On(core.SignalOffer, func(sig core.Signal) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), longSignalTimeout)
 		defer cancel()
 		var sdp webrtc.SessionDescription
 		if err := json.Unmarshal([]byte(sig.SDP), &sdp); err != nil {
+			a.logger.Error("SFU: Failed to unmarshal offer from %s: %v", sig.From, err)
 			return
 		}
 		answer, err := a.rtcManager.HandleOffer(ctx, sig.From, sig.From, sig.RoomID, sdp)
 		if err != nil {
+			a.logger.Error("SFU: Failed to handle offer from %s: %v", sig.From, err)
 			return
 		}
-		a.signalHub.Send(ctx, core.Signal{Type: core.SignalAnswer, From: "SFU", To: sig.From, RoomID: sig.RoomID, SDP: answer.SDP})
+		if err := a.signalHub.Send(ctx, core.Signal{
+			Type:   core.SignalAnswer,
+			From:   "SFU",
+			To:     sig.From,
+			RoomID: sig.RoomID,
+			SDP:    answer.SDP,
+		}); err != nil {
+			a.logger.Error("SFU: Failed to send answer to %s: %v", sig.From, err)
+		}
 	})
 
 	a.signalHub.On(core.SignalSFUOffer, func(sig core.Signal) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), defaultSignalTimeout)
 		defer cancel()
 		
 		userID, _ := splitSessionID(sig.From)
@@ -741,13 +768,15 @@ func (a *App) setupRTCSignaling() {
 			return
 		}
 		
-		_ = a.signalHub.Send(ctx, core.Signal{
+		if err := a.signalHub.Send(ctx, core.Signal{
 			Type:   core.SignalSFUAnswer,
 			From:   "SYSTEM",
 			To:     sig.From,
 			RoomID: sig.RoomID,
 			SDP:    answer.SDP,
-		})
+		}); err != nil {
+			a.logger.Error("SFU: Failed to send SFU answer to %s: %v", sig.From, err)
+		}
 	})
 
 	a.signalHub.On(core.SignalSFUAnswer, func(sig core.Signal) {
@@ -786,17 +815,21 @@ func (a *App) setupRTCSignaling() {
 		}
 		
 		// Subscribing creates a new track which requires an SDP renegotiation. Let's restart ICE/offer process.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), defaultSignalTimeout)
 		defer cancel()
 		offer, err := a.rtcManager.RestartICE(sig.From)
-		if err == nil {
-			_ = a.signalHub.Send(ctx, core.Signal{
-				Type:   core.SignalSFUOffer,
-				From:   "SYSTEM",
-				To:     sig.From,
-				RoomID: sig.RoomID,
-				SDP:    offer.SDP,
-			})
+		if err != nil {
+			a.logger.Error("SFU: Failed to restart ICE for %s after subscription: %v", sig.From, err)
+			return
+		}
+		if err := a.signalHub.Send(ctx, core.Signal{
+			Type:   core.SignalSFUOffer,
+			From:   "SYSTEM",
+			To:     sig.From,
+			RoomID: sig.RoomID,
+			SDP:    offer.SDP,
+		}); err != nil {
+			a.logger.Error("SFU: Failed to send post-subscription offer to %s: %v", sig.From, err)
 		}
 	})
 
