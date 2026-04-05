@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net/http"
@@ -81,6 +82,19 @@ func main() {
 				last_msg TEXT,
 				updated_at DATETIME,
 				PRIMARY KEY (user_id, contact_id)
+			);
+			CREATE TABLE IF NOT EXISTS kuruvi_groups (
+				room_id TEXT PRIMARY KEY,
+				name TEXT,
+				creator_id TEXT,
+				created_at DATETIME
+			);
+			CREATE TABLE IF NOT EXISTS kuruvi_group_members (
+				room_id TEXT,
+				user_id TEXT,
+				role TEXT, -- 'admin' or 'member'
+				joined_at DATETIME,
+				PRIMARY KEY (room_id, user_id)
 			);
 		`
 		if _, err := migrationDB.Exec(kuruviTables); err != nil {
@@ -660,12 +674,33 @@ func main() {
 			return
 		}
 
-		// Generate a random ID or use group name hash
+		// Generate ID
 		roomID := "group-" + fmt.Sprintf("%d", time.Now().UnixNano())
-		// Use the central Mana Room Manager to create an isolated logical room
+		// Mana Room Manager
 		newRoom := app.RoomManager().Create(roomID, req.GroupName, "group", userID)
 
-		// If product store is hooked, upsert room metadata there too
+		// Persist Kuruvi Group Metadata
+		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
+		if err == nil {
+			defer dbConn.Close()
+			now := time.Now()
+			_, _ = dbConn.Exec("INSERT INTO kuruvi_groups (room_id, name, creator_id, created_at) VALUES (?, ?, ?, ?)",
+				roomID, req.GroupName, userID, now)
+			
+			// Add creator as Admin
+			_, _ = dbConn.Exec("INSERT INTO kuruvi_group_members (room_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)",
+				roomID, userID, "admin", now)
+
+			// Add initial members
+			for _, mid := range req.Members {
+				if mid != "" && mid != userID {
+					_, _ = dbConn.Exec("INSERT OR IGNORE INTO kuruvi_group_members (room_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)",
+						roomID, mid, "member", now)
+				}
+			}
+		}
+
+		// If product store is hooked
 		if app.ProductStore() != nil {
 			participants := append(req.Members, userID)
 			_ = app.ProductStore().UpsertConversation(product.Conversation{
@@ -679,6 +714,113 @@ func main() {
 		log.Printf("[Group] User %s created group %s (ID: %s)", userID, req.GroupName, newRoom.ID())
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"room_id": newRoom.ID(), "group_name": req.GroupName})
+	}))
+
+	// 4f. Group Management Endpoints
+	mux.HandleFunc("/api/group/members", cors(func(w http.ResponseWriter, r *http.Request) {
+		roomID := r.URL.Query().Get("room_id")
+		if roomID == "" {
+			http.Error(w, "room_id required", http.StatusBadRequest)
+			return
+		}
+
+		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
+		if err != nil {
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+		defer dbConn.Close()
+
+		switch r.Method {
+		case http.MethodGet:
+			// List members with usernames from accounts table
+			rows, err := dbConn.Query(`
+				SELECT gm.user_id, a.username, gm.role, gm.joined_at
+				FROM kuruvi_group_members gm
+				JOIN accounts a ON gm.user_id = a.user_id
+				WHERE gm.room_id = ?
+			`, roomID)
+			if err != nil {
+				http.Error(w, "Query error", http.StatusInternalServerError)
+				return
+			}
+			defer rows.Close()
+
+			var members []map[string]interface{}
+			for rows.Next() {
+				var uid, name, role string
+				var joined time.Time
+				if err := rows.Scan(&uid, &name, &role, &joined); err == nil {
+					members = append(members, map[string]interface{}{
+						"user_id": uid, "username": name, "role": role, "joined_at": joined,
+					})
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(members)
+
+		case http.MethodPost: // Add member
+			selfID, _ := resolveUserContext(r, app.JWTAuth())
+			if selfID == "" {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			// Check if self is Admin
+			var role string
+			_ = dbConn.QueryRow("SELECT role FROM kuruvi_group_members WHERE room_id = ? AND user_id = ?", roomID, selfID).Scan(&role)
+			if role != "admin" {
+				http.Error(w, "Forbidden: Only admins can add members", http.StatusForbidden)
+				return
+			}
+
+			var req struct {
+				UserID string `json:"user_id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "Invalid JSON", http.StatusBadRequest)
+				return
+			}
+
+			_, err = dbConn.Exec("INSERT OR IGNORE INTO kuruvi_group_members (room_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)",
+				roomID, req.UserID, "member", time.Now())
+			if err != nil {
+				http.Error(w, "Failed to add member", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+
+		case http.MethodDelete: // Remove member
+			selfID, _ := resolveUserContext(r, app.JWTAuth())
+			if selfID == "" {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			// Check if self is Admin
+			var role string
+			_ = dbConn.QueryRow("SELECT role FROM kuruvi_group_members WHERE room_id = ? AND user_id = ?", roomID, selfID).Scan(&role)
+			if role != "admin" {
+				http.Error(w, "Forbidden: Only admins can remove members", http.StatusForbidden)
+				return
+			}
+
+			userID := r.URL.Query().Get("user_id")
+			if userID == "" {
+				http.Error(w, "user_id required", http.StatusBadRequest)
+				return
+			}
+
+			_, err = dbConn.Exec("DELETE FROM kuruvi_group_members WHERE room_id = ? AND user_id = ?", roomID, userID)
+			if err != nil {
+				http.Error(w, "Failed to remove member", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
 	}))
 
 	// 5. Static Files & Frontend SPA Routing
@@ -888,6 +1030,155 @@ func main() {
 			}
 		}
 	})
+
+	// 8.1 History API — fetch messages between user and contact
+	mux.HandleFunc("/api/messages/history", cors(func(w http.ResponseWriter, r *http.Request) {
+		selfID, _ := resolveUserContext(r, app.JWTAuth())
+		if selfID == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		contactID := r.URL.Query().Get("contact_id")
+		if contactID == "" {
+			http.Error(w, "contact_id required", http.StatusBadRequest)
+			return
+		}
+
+		msgs, err := app.MessageStore().GetConversation(r.Context(), selfID, contactID, 50)
+		if err != nil {
+			log.Printf("History fetch error: %v", err)
+			http.Error(w, "failed to fetch history", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(msgs)
+	}))
+
+	// 8.2 Contacts Persistence — manually add a contact
+	mux.HandleFunc("/api/contacts/add", cors(func(w http.ResponseWriter, r *http.Request) {
+		selfID, _ := resolveUserContext(r, app.JWTAuth())
+		if selfID == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var req struct {
+			ContactID string `json:"contact_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
+		if err != nil {
+			http.Error(w, "DB error", http.StatusInternalServerError)
+			return
+		}
+		defer dbConn.Close()
+
+		_, err = dbConn.Exec(`
+			INSERT OR IGNORE INTO kuruvi_contacts (user_id, contact_id, last_msg, updated_at) 
+			VALUES (?, ?, ?, ?)`, 
+			selfID, req.ContactID, "New contact", time.Now())
+		if err != nil {
+			http.Error(w, "persistence error", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// 8.3 Media Upload — handle file uploads
+	mux.HandleFunc("/api/upload", cors(func(w http.ResponseWriter, r *http.Request) {
+		selfID, _ := resolveUserContext(r, app.JWTAuth())
+		if selfID == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// 500MB limit for rich media (Video/Audio/Docs)
+		err := r.ParseMultipartForm(500 << 20)
+		if err != nil {
+			http.Error(w, "file too large (max 500MB)", http.StatusRequestEntityTooLarge)
+			return
+		}
+
+		file, handler, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "file upload error", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		ext := filepath.Ext(handler.Filename)
+		fileName := fmt.Sprintf("%d-%d%s", time.Now().UnixNano(), rand.Intn(1000), ext)
+		// Store in kuruvi/backend/data/attachments
+		uploadDir := filepath.Join("kuruvi", "backend", "data", "attachments")
+		os.MkdirAll(uploadDir, 0755)
+		
+		uploadPath := filepath.Join(uploadDir, fileName)
+
+		dst, err := os.Create(uploadPath)
+		if err != nil {
+			log.Printf("Upload destination error: %v", err)
+			http.Error(w, "internal save error", http.StatusInternalServerError)
+			return
+		}
+		defer dst.Close()
+
+		if _, err := io.Copy(dst, file); err != nil {
+			http.Error(w, "copy error", http.StatusInternalServerError)
+			return
+		}
+
+		// Return absolute URL
+		scheme := "http"
+		if r.TLS != nil { scheme = "https" }
+		url := fmt.Sprintf("%s://%s/attachments/%s", scheme, r.Host, fileName)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"url": url})
+	}))
+
+	// 8.5 Account Deletion — permanent removal
+	mux.HandleFunc("/api/auth/delete", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		selfID, _ := resolveUserContext(r, app.JWTAuth())
+		if selfID == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		log.Printf("[Auth] Processing deletion request for user: %s", selfID)
+
+		// 1. Delete Kuruvi-specific data first (profiles, contacts)
+		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
+		if err == nil {
+			defer dbConn.Close()
+			dbConn.Exec("DELETE FROM kuruvi_profiles WHERE user_id = ?", selfID)
+			dbConn.Exec("DELETE FROM kuruvi_contacts WHERE user_id = ? OR contact_id = ?", selfID, selfID)
+		}
+
+		// 2. Delete core account via framework
+		ctx := r.Context()
+		if err := app.AccountStore().DeleteUser(ctx, selfID); err != nil {
+			log.Printf("[Auth] Core account deletion failed: %v", err)
+			http.Error(w, "Failed to delete account", http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("[Auth] User %s deleted successfully", selfID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+	}))
+
+	// 8.4 Serve Attachments
+	attachmentsDir := filepath.Join("kuruvi", "backend", "data", "attachments")
+	mux.Handle("/attachments/", http.StripPrefix("/attachments/", http.FileServer(http.Dir(attachmentsDir))))
 
 	// 9. Start Server
 	log.Printf("Kuruvi backend starting on http://%s:%d", cfg.Host, cfg.Port)
