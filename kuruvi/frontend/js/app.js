@@ -737,37 +737,44 @@ const App = {
         let contentHtml = this.escapeHTML(text);
 
         if (text.includes('/attachments/')) {
+            // Resolve relative URLs strictly against the configured API backend
+            let mediaUrl = text;
+            if (mediaUrl.startsWith('/attachments/')) {
+                const hostBase = API.baseUrl.replace('/api', '');
+                mediaUrl = hostBase + mediaUrl;
+            }
+
             const fileName = text.split('/').pop();
             const ext = fileName.split('.').pop().toLowerCase();
             const downloadAttr = `download="${fileName}"`;
             
-            const downloadBtn = `<a href="${text}" ${downloadAttr} class="download-mini-btn" title="Download"><i data-lucide="download" style="width:14px;"></i></a>`;
+            const downloadBtn = `<a href="${this.escapeHTML(mediaUrl)}" ${downloadAttr} class="download-mini-btn" title="Download"><i data-lucide="download" style="width:14px;"></i></a>`;
 
             if (['jpg','jpeg','png','gif','webp'].includes(ext)) {
                 contentHtml = `
                     <div class="media-container">
-                        <img src="${this.escapeHTML(text)}" style="max-width:300px; border-radius:8px; cursor:pointer;" onclick="window.open('${this.escapeHTML(text)}', '_blank')">
+                        <img src="${this.escapeHTML(mediaUrl)}" style="max-width:300px; border-radius:8px; cursor:pointer;" onclick="window.open('${this.escapeHTML(mediaUrl)}', '_blank')">
                         ${downloadBtn}
                     </div>`;
             } else if (['mp4','webm','ogg'].includes(ext)) {
                 contentHtml = `
                     <div class="media-container">
-                        <video src="${this.escapeHTML(text)}" controls style="max-width:300px; border-radius:8px;"></video>
+                        <video src="${this.escapeHTML(mediaUrl)}" controls style="max-width:300px; border-radius:8px;"></video>
                         ${downloadBtn}
                     </div>`;
             } else if (['mp3','wav','m4a','aac'].includes(ext)) {
                 contentHtml = `
                     <div class="media-container">
-                        <audio src="${this.escapeHTML(text)}" controls style="width:250px;"></audio>
+                        <audio src="${this.escapeHTML(mediaUrl)}" controls style="width:250px;"></audio>
                         ${downloadBtn}
                     </div>`;
             } else {
                 contentHtml = `
                     <div style="display:flex; align-items:center; gap:8px;">
-                        <a href="${this.escapeHTML(text)}" target="_blank" class="attachment-link" style="display:flex; align-items:center; gap:8px; color:var(--accent-cyan); background:rgba(255,255,255,0.05); padding:10px; border-radius:8px; border:1px solid var(--border); flex:1;">
+                        <a href="${this.escapeHTML(mediaUrl)}" target="_blank" class="attachment-link" style="display:flex; align-items:center; gap:8px; color:var(--accent-cyan); background:rgba(255,255,255,0.05); padding:10px; border-radius:8px; border:1px solid var(--border); flex:1;">
                             <i data-lucide="file-text"></i><span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:200px;">${this.escapeHTML(fileName)}</span>
                         </a>
-                        <a href="${text}" ${downloadAttr} class="btn-icon" style="background:var(--bg-surface); padding:8px;"><i data-lucide="download"></i></a>
+                        <a href="${this.escapeHTML(mediaUrl)}" ${downloadAttr} class="btn-icon" style="background:var(--bg-surface); padding:8px;"><i data-lucide="download"></i></a>
                     </div>`;
             }
         }

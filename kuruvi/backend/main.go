@@ -1240,10 +1240,8 @@ func main() {
 			return
 		}
 
-		// Return absolute URL
-		scheme := "http"
-		if r.TLS != nil { scheme = "https" }
-		url := fmt.Sprintf("%s://%s/attachments/%s", scheme, r.Host, fileName)
+		// Return relative URL so clients can resolve it based on their connection origin
+		url := fmt.Sprintf("/attachments/%s", fileName)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"url": url})

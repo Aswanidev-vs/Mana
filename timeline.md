@@ -190,7 +190,10 @@ Mana is in a strong prototype / production-ready framework state, but the phases
 - **Handshake Tuning**: Developed the `broadcast_key` protocol to refresh public keys across peer-to-peer connections upon session initialization.
 
 
-e2ee for group chat is future implementaion.
+future implementation 
+
+- e2ee for video,audio and files
+- e2ee for group chat
 
 ---
 
