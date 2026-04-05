@@ -921,11 +921,23 @@ func resolveUserContext(r *http.Request, jwtAuth *auth.JWTAuth) (userID, usernam
 
 // sendWelcomeEmail handles outbound SMTP dispatch using wneessen/go-mail.
 func sendWelcomeEmail(toEmail, kuruviID string) {
-	// Attempt to load SMTP from environment variables
+	// Attempt to load SMTP from environment variables (supporting both KURUVI_ and generic prefixes)
 	smtpHost := os.Getenv("KURUVI_SMTP_HOST")
+	if smtpHost == "" {
+		smtpHost = os.Getenv("SMTP_HOST")
+	}
 	smtpPort := os.Getenv("KURUVI_SMTP_PORT")
+	if smtpPort == "" {
+		smtpPort = os.Getenv("SMTP_PORT")
+	}
 	smtpUser := os.Getenv("KURUVI_SMTP_USER")
+	if smtpUser == "" {
+		smtpUser = os.Getenv("SMTP_USER")
+	}
 	smtpPass := os.Getenv("KURUVI_SMTP_PASS")
+	if smtpPass == "" {
+		smtpPass = os.Getenv("SMTP_PASS")
+	}
 
 	if smtpHost == "" {
 		log.Printf("[Email Service] SMTP configuration (KURUVI_SMTP_HOST) missing. Intercepting delivery to %s for ID: %s", toEmail, kuruviID)
@@ -933,8 +945,13 @@ func sendWelcomeEmail(toEmail, kuruviID string) {
 	}
 
 	m := mail.NewMsg()
-	if err := m.From("noreply@kuruvi.mana"); err != nil {
-		log.Printf("[Email Service] Failed to set generic From address: %v", err)
+	// Gmail requires the 'From' address to match the authenticated account
+	fromAddr := smtpUser
+	if fromAddr == "" {
+		fromAddr = "noreply@kuruvi.mana"
+	}
+	if err := m.From(fromAddr); err != nil {
+		log.Printf("[Email Service] Failed to set From address %s: %v", fromAddr, err)
 		return
 	}
 
