@@ -46,13 +46,14 @@
 
 import (
     "log"
-    "github.com/Aswanidev-vs/mana"
+    mana "github.com/Aswanidev-vs/mana"
+    "github.com/Aswanidev-vs/mana/core"
 )
 
 func main() {
     // 1. Minimum viable functional RTC server.
-    // Zero-config enables auto-persistent storage.
-    app := mana.New(mana.DefaultConfig())
+    // Zero-config enables auto-persistent storage (SQLite).
+    app := mana.New(core.DefaultConfig())
     
     // 2. Start the engine on port 8080 (default)
     log.Fatal(app.Start())

@@ -19,21 +19,21 @@
     <main class="split-layout">
         <!-- Left: Documentation -->
         <section class="guide-column">
-            <h1>Shared Data Sources</h1>
+            <h1>Nuclear Atomicity</h1>
             <p>A common pain point in framework architecture is managing separate database connections for the framework and your application. Mana solves this by allowing you to <strong>inject your existing pool</strong> into its core engine.</p>
 
             <h2>1. Single Pool Architecture</h2>
-            <p>Instead of creating two connection pools, you can open your <code>*sql.DB</code> manually (e.g., using GORM or standard <code>sql</code>) and pass it to Mana. This ensures:</p>
+            <p>Instead of creating two connection pools, you can open your <code>*sql.DB</code> manually (e.g., using GORM or standard <code>sql</code>) and pass it to Mana. This ensures resource efficiency and consistency.</p>
+
+            <h2>2. Shared Transactions (WithTx)</h2>
+            <p>This is Mana's superpower. You can wrap framework operations and your own application operations in a <strong>single atomic transaction</strong>. If your app logic fails, the framework's message/account changes are rolled back too.</p>
             <ul>
-                <li><strong>ACID Consistency</strong>: You can wrap framework operations (like creating a user) and your own operations (like creating a profile) in a single shared transaction.</li>
-                <li><strong>Resource Efficiency</strong>: No extra connections sitting idle in the database pool.</li>
+                <li><strong>Consistent State</strong>: Never worry about a user being charged without a receipt being sent.</li>
+                <li><strong>ACID Guarantees</strong>: Full relational integrity across framework and app tables.</li>
             </ul>
 
-            <h2>2. Multiple Driver Support</h2>
-            <p>Mana supports <strong>PostgreSQL, MySQL, and SQLite</strong> out of the box. Use <code>app.WithDatabase()</code> to tell Mana which dialect you are using so it can optimize its internal queries accordingly.</p>
-
-            <h2>3. Raw Backend Access</h2>
-            <p>Even after injection, you can access the framework's internal storage via <code>app.DBBackend()</code> if you need to run raw performance-tuned queries directly on the framework's internal tables.</p>
+            <h2>3. Dialect Support</h2>
+            <p>Mana supports <strong>PostgreSQL, MySQL, and SQLite</strong>. Simply use <code>app.WithDatabase(conn, db.SQLite)</code> to wire it up.</p>
         </section>
 
         <!-- Right: Code -->
@@ -44,24 +44,35 @@
             <pre><code class="lang-go">package main
 
 import (
+    "context"
     "database/sql"
     "github.com/Aswanidev-vs/mana"
     "github.com/Aswanidev-vs/mana/storage/db"
 )
 
 func main() {
-    // 1. Open your master database connection manually
-    // This could be shared with GORM or any other ORM.
-    myConn, _ := sql.Open("postgres", "postgres://user:pass@localhost/main_db")
+    // 1. Open your master database connection
+    myConn, _ := sql.Open("sqlite", "my_app.db")
 
-    // 2. Setup Mana with shared pool and dialect
+    // 2. Setup Mana with shared pool
     app := mana.New(mana.DefaultConfig())
-    
-    // Inject the pool so Mana won't open its own.
-    app.WithDatabase(myConn, db.Postgres)
+    app.WithDatabase(myConn, db.SQLite)
 
-    // 3. Start the engine
-    log.Fatal(app.Start())
+    // 3. Shared Transaction Demo
+    ctx := context.Background()
+    tx, _ := myConn.BeginTx(ctx, nil)
+
+    // Update your 'users' table
+    tx.ExecContext(ctx, "UPDATE users SET bal = bal - 10")
+
+    // Inject 'tx' into context for Mana
+    txCtx := db.WithTx(ctx, tx)
+
+    // Mana now joins YOUR transaction!
+    app.MessageStore().SaveMessage(txCtx, msg, peers)
+
+    // Atomic commit
+    tx.Commit()
 }</code></pre>
         </section>
     </main>

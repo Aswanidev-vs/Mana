@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mana — Advanced E2EE Guide</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body class="viewer-layout">
+    <header class="viewer-header">
+        <a href="../index.html#features" class="btn-back">← Back to Docs</a>
+        <div class="breadcrumbs">
+            <span>Mana</span> <span class="sep">/</span> <span>docs</span> <span class="sep">/</span> <strong>advanced_e2ee.html</strong>
+        </div>
+    </header>
+
+    <main class="split-layout">
+        <!-- Left: Documentation -->
+        <section class="guide-column">
+            <h1>Advanced E2EE Security</h1>
+            <p>Mana implements a high-fidelity end-to-end encryption model inspired by the Signal Protocol. It isn't just about encrypting payloads; it's about managing a self-healing, multi-device trust environment.</p>
+
+            <h2>1. X3DH Handshake</h2>
+            <p>The <strong>Extended Triple Diffie-Hellman (X3DH)</strong> protocol is used to establish a shared secret between two users who might not be online at the same time. Mana handles the pre-key publishing and bundle fetching automatically.</p>
+
+            <h2>2. Double Ratchet</h2>
+            <p>Once a session is established, every single message is encrypted using a unique, rotating key derived from the <strong>Double Ratchet</strong> algorithm. This ensures:</p>
+            <ul>
+                <li><strong>Forward Secrecy</strong>: If a key is compromised today, past messages remain secure.</li>
+                <li><strong>Break-in Recovery</strong>: The session "heals" itself with every exchange, making future messages secure even if a key was stolen in the past.</li>
+            </ul>
+
+            <h2>3. Multi-Device Fanout</h2>
+            <p>Mana's signaling hub is device-aware. When you send an encrypted message, the framework automatically fans it out to all of the recipient's linked devices, ensuring a seamless cross-platform experience.</p>
+        </section>
+
+        <!-- Right: Code -->
+        <section class="code-column">
+            <div class="code-header">
+                <div class="filename">e2ee_config.go</div>
+            </div>
+            <pre><code class="lang-go">package main
+
+import "github.com/Aswanidev-vs/mana/core"
+
+func main() {
+    cfg := core.DefaultConfig()
+    
+    // 🛡️ Enable the security suite
+    cfg.EnableE2EE = true
+    
+    // Optional: High-security session expiry
+    cfg.E2EESessionTimeout = 30 * 24 * time.Hour
+    
+    app := mana.New(cfg)
+    
+    // Mana now handles:
+    // - Pre-key storage in SQL
+    // - Handshake signaling
+    // - Automatic decryption retries
+    
+    app.Start()
+}</code></pre>
+
+            <div class="alert alert-info" style="margin-top: 2rem;">
+                <p><strong>Note:</strong> Mana's E2EE implementation uses the <code>e2ee</code> package for state management and the <code>storage</code> package for persistent key bundles.</p>
+            </div>
+        </section>
+    </main>
+
+    <script src="../script.js"></script>
+</body>
+</html>

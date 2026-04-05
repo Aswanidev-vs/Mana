@@ -2,13 +2,15 @@
 
 ## Executive Summary
 
-### 🚀 New Things Added
+- **Advanced E2EE (X3DH + Double Ratchet):** Full implementation of WhatsApp-grade encryption including forward secrecy, self-healing handshakes, and multi-device encrypted fan-out.
 - **Production DB Architecture:** Plug-and-play SQL "Batteries" (Postgres, MySQL, SQLite) for Messaging, Identity, Social, and Settings.
 - **Shared DB Transactions:** `WithTx` mapping, allowing Mana updates and your own custom app logic to share single, atomic database transactions.
 - **Table Prefixing:** Added `DatabaseTablePrefix` to safely isolate framework tables alongside your custom tables.
 
 ### ⏳ In Progress
-- **RTC Hardening:** Stabilizing ICE restarts, server-side offer generation, and signal routing.
+- **RTC Hardening:** Implemented ICE candidate queuing and synchronized hangup signaling for reliable 1:1 and group calling.
+- **Mobile Responsive Layout:** Single-column responsive view with sidebar toggling and optimized media grids for all device aspect ratios.
+- **Group Lifecycle:** Finalized "Leave Group" and "Delete Group" (Admin-only) functionality with backend enforcement.
 - **Multi-Device Architecture:** Per-device session tracking and direct fanout to multiple device IDs.
 
 ### 🔮 To Be Added (Future)
@@ -113,8 +115,8 @@ The items below are the next major milestones needed to move Mana toward a Whats
 |---|---|---|---|
 | **Phase 11: Durable Messaging & Offline Sync** | ✅ Implemented | 100% | Context-aware SQL message store, delivery tracking, offline replay, Postgres/MySQL/SQLite "Batteries" |
 | **Phase 12: Multi-Device Architecture** | ✅ Implemented | 100% | Session IDs with device suffixes, per-user multi-session tracking, direct fanout to all user sessions, room multi-session support, Encrypted Fanout |
-| **Phase 13: Advanced E2EE** | ✅ Implemented (Core) | 95% | X3DH, Double Ratchet, Sesame-lite multi-device fanout, OPK pools, Self-healing handshake & auto-retry |
-| **Phase 14: RTC Hardening** | ⚠️ Partially Implemented | 60% | ICE restart signal, server-side ICE restart offer generation, session-aware RTC identity handling, call signaling routing fixes |
+| **Phase 13: Advanced E2EE** | ✅ Implemented | 100% | X3DH, Double Ratchet, Sesame-lite multi-device fanout, OPK pools, Self-healing handshake & auto-retry |
+| **Phase 14: RTC Hardening** | ✅ Implemented (Core) | 75% | ICE candidate queuing, synchronized hangup signaling, floating control robustness, multi-device track attachment fixes |
 
 Implemented evidence:
 
@@ -176,8 +178,12 @@ Mana is in a strong prototype / production-ready framework state, but the phases
 
 - **Persistent Contact History**: Leveraged the framework's `kuruvi_contacts` table to store conversation history at rest.
 - **Multi-Discovery Hub**: Implemented account search by Email and Phone number via framework `accounts` table extension.
-- **Self-Healing E2EE**: implemented an auto-retry handshake logic in the client. On decryption failure, the client now proactively re-fetches PublicPreKey bundles from the framework signal hub.
-- **RTC Reliability**: Validated signaling routing for audio/video calls across multiple concurrent sessions.
+- **Self-Healing E2EE**: Developed a robust auto-retry handshake mechanism. On decryption failure, the client proactively re-fetches PublicPreKey bundles and re-negotiates the Double Ratchet session, ensuring zero message loss.
+- **Multi-Device ECDH**: Optimized the key resolution logic to ensure that messages sent from one device are immediately decryptable on all other linked devices by correctly identifying the sender's device-specific key.
+- **RTC Reliability**: Implemented a **Pending ICE Candidate Queue** to eliminate race conditions during call setup. Added **Hangup Signaling** to automatically synchronize call termination across all participants.
+- **Floating Call Controls**: Moved call actions to an absolute floating bar with high z-index and glassmorphism, ensuring buttons are always visible and clickable regardless of video expansion.
+- **Full Responsiveness**: Developed a mobile-first responsive engine that toggles between sidebar and chat view on narrow screens, including a dedicated "Back" navigation system.
+- **Group Management**: Finalized Secure Group Lifecycle (Create/Leave/Delete) with admin-permission checks and reactive sidebar updates.
 
 ### 3. Messaging Performance
 - **Sync Optimization**: Implemented `message_sync` fanout for offline message replay.

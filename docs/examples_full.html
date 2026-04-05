@@ -19,27 +19,30 @@
     <main class="split-layout">
         <!-- Left: Documentation -->
         <section class="guide-column">
-            <h1>Full Stack Implementation</h1>
+            <h1>Golden Path Implementation</h1>
             <p>The <code>full</code> example demonstrates a production-ready RTC server utilizing Mana's "Batteries Included" philosophy. It combines authentication, WebRTC signaling, and database persistence into a single unified instance.</p>
 
             <h2>1. Configuration</h2>
             <p>We start by initializing <code>core.DefaultConfig()</code>. This provides sensible defaults for performance and security. In this example, we explicitly enable:</p>
             <ul>
                 <li><strong>EnableRTC</strong>: Activates the WebRTC signaling hub.</li>
-                <li><strong>EnableAuth</strong>: Enforces JWT-based authentication for all connections.</li>
-                <li><strong>DatabaseDriver</strong>: Sets up SQLite for persistent message and user storage.</li>
+                <li><strong>EnableE2EE</strong>: Enables the X3DH and Double Ratchet key exchange pipelines.</li>
+                <li><strong>DatabaseDriver</strong>: Sets up SQLite for high-performance relational persistence.</li>
             </ul>
 
-            <h2>2. The Message Hook</h2>
-            <p>Mana uses an event-driven architecture. The <code>app.OnMessage()</code> hook allows you to intercept every message passing through the system. This is where you implement custom logic like:</p>
+            <h2>2. Advanced E2EE</h2>
+            <p>Mana doesn't just encrypt messages; it manages the entire session lifecycle. With E2EE enabled, the framework automatically handles:</p>
             <ul>
-                <li><strong>Logging & Analytics</strong>: Tracking message volume.</li>
-                <li><strong>Modertion</strong>: Filtering content in real-time.</li>
-                <li><strong>Side Effects</strong>: Triggering external APIs when certain keywords are sent.</li>
+                <li><strong>X3DH Handshakes</strong>: Securely establishing keys for new peers.</li>
+                <li><strong>Double Ratchet</strong>: Ensuring perfect forward secrecy for every packet.</li>
+                <li><strong>Self-Healing</strong>: Automatically re-negotiating sessions if a decryption error occurs.</li>
             </ul>
 
-            <h2>3. Scaling the App</h2>
-            <p>While this example uses SQLite for simplicity, you can swap the <code>DatabaseDriver</code> to <code>postgres</code> or <code>mysql</code> simply by changing the config and providing a DSN. The business logic remains identical.</p>
+            <h2>3. Media Control (WebRTC)</h2>
+            <p>The framework provides granular hooks for call lifecycle events. You can monitor when calls start, end, or when users toggle their media states (mute/camera).</p>
+            
+            <h2>4. SQL Batteries</h2>
+            <p>While this example uses SQLite for simplicity, you can swap the <code>DatabaseDriver</code> to <code>postgres</code> or <code>mysql</code> without changing a single line of business logic.</p>
         </section>
 
         <!-- Right: Code -->
@@ -53,30 +56,31 @@ import (
     "log"
     "github.com/Aswanidev-vs/mana"
     "github.com/Aswanidev-vs/mana/core"
+    "github.com/Aswanidev-vs/mana/storage/db"
+    _ "modernc.org/sqlite"
 )
 
 func main() {
     // 1. Initialize with all batteries included
-    // Mana handles everything from DB migration to WebSocket handshakes.
     cfg := core.DefaultConfig()
     cfg.EnableRTC = true
-    cfg.EnableAuth = true
-    cfg.DatabaseDriver = "sqlite"
+    cfg.EnableE2EE = true
+    cfg.DatabaseDriver = db.SQLite
     cfg.DatabaseDSN = "full_example.db"
 
     app := mana.New(cfg)
 
-    // 2. Custom application logic
-    // React to messages globally across all rooms.
+    // 2. Lifecycle hooks
     app.OnMessage(func(msg core.Message) {
-        log.Printf("Message in Room %s: %s", msg.RoomID, string(msg.Payload))
+        log.Printf("New Message in %s", msg.RoomID)
+    })
+
+    app.OnCallStart(func(event core.CallEvent) {
+        log.Printf("Call started by %s", event.Caller)
     })
 
     // 3. Start the engine
-    log.Printf("Mana server starting on %d...", cfg.Port)
-    if err := app.Start(); err != nil {
-        log.Fatal(err)
-    }
+    log.Fatal(app.Start())
 }</code></pre>
         </section>
     </main>

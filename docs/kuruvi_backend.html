@@ -34,7 +34,10 @@
             </ul>
 
             <h2>3. End-to-End Encryption (E2EE)</h2>
-            <p>Kuruvi leverages the <code>KeyExchange</code> hub in Mana to store and distribute public keys for E2EE messaging, ensuring that only the sender and receiver can decrypt the message payload.</p>
+            <p>Kuruvi leverages the <code>KeyExchange</code> hub in Mana to store and distribute public keys for E2EE messaging, ensuring that only the sender and receiver can decrypt the message payload. It implements the full **X3DH + Double Ratchet** protocol for all conversations.</p>
+
+            <h2>4. Mobile-First Responsive UI</h2>
+            <p>The Kuruvi frontend is meticulously designed for high-end mobile experiences, featuring glassmorphism floating call controls, an adaptive single-column layout for small screens, and synchronized signaling for multi-device cross-platform calling.</p>
         </section>
 
         <!-- Right: Code -->
@@ -45,24 +48,27 @@
             <pre><code class="lang-go">package main
 
 import (
-    "github.com/Aswanidev-vs/mana"
+    mana "github.com/Aswanidev-vs/mana"
     "github.com/Aswanidev-vs/mana/core"
+    "github.com/Aswanidev-vs/mana/storage/db"
 )
 
 func main() {
-    // 1. Kuruvi uses production-grade stores
-    app := mana.New(mana.DefaultConfig())
-    
-    // Auto-wiring of Account/Profile/Message stores
-    accounts := app.AccountStore()
-    messages := app.MessageStore()
+    // 1. Kuruvi uses production-grade SQL batteries
+    cfg := core.DefaultConfig()
+    cfg.DatabaseDriver = db.SQLite
+    cfg.DatabaseDSN    = "data/kuruvi.db"
+    cfg.EnableE2EE     = true
+    cfg.EnableRTC      = true
 
-    // 2. Custom hooks for post-persistence business logic
+    app := mana.New(cfg)
+
+    // 2. Custom hooks for post-persistence logic
     app.OnMessageStored(func(ctx context.Context, msg core.Message) {
         // Trigger push alerts, analytics, or sync
     })
 
-    // 3. Start the engine
+    // 3. Start high-performance server
     log.Fatal(app.Start())
 }</code></pre>
         </section>
