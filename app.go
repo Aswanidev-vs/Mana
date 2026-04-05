@@ -249,6 +249,7 @@ func New(cfg core.Config) *App {
 		OnConnect:      app.onWSConnect,
 		OnDisconnect:   app.onWSDisconnect,
 		OnMessage:      app.onWSMessage,
+		Logger:         app.logger,
 	})
 
 	// Product store initialization
@@ -310,7 +311,11 @@ func (a *App) WithDatabase(dbConn *sql.DB, driver string) *App {
 func (a *App) initializeDefaultStores(backend *db.Backend) {
 	prefix := a.config.DatabaseTablePrefix
 	if a.store == nil {
-		a.store, _ = storage.NewSQLMessageStoreWithPrefix(backend, prefix)
+		var err error
+		a.store, err = storage.NewSQLMessageStoreWithPrefix(backend, prefix)
+		if err != nil {
+			a.logger.Error("Failed to initialize SQL Message Store: %v", err)
+		}
 	}
 	if a.account == nil {
 		var err error
@@ -323,14 +328,23 @@ func (a *App) initializeDefaultStores(backend *db.Backend) {
 		socialStore, err := social.NewSQLSocialStoreWithPrefix(backend, prefix)
 		if err != nil {
 			a.logger.Error("Failed to initialize SQL Social Store: %v", err)
+		} else {
+			a.profile = socialStore
+			a.contact = socialStore
 		}
-		a.profile = socialStore
-		a.contact = socialStore
 		// Default implementations for others if not provided
-		a.prefs, _ = settings.NewSQLPreferenceStoreWithPrefix(backend, prefix)
+		var errPref error
+		a.prefs, errPref = settings.NewSQLPreferenceStoreWithPrefix(backend, prefix)
+		if errPref != nil {
+			a.logger.Error("Failed to initialize SQL Preference Store: %v", errPref)
+		}
 	}
 	if a.rooms == nil {
-		a.rooms, _ = storage.NewSQLRoomStoreWithPrefix(backend, prefix)
+		var err error
+		a.rooms, err = storage.NewSQLRoomStoreWithPrefix(backend, prefix)
+		if err != nil {
+			a.logger.Error("Failed to initialize SQL Room Store: %v", err)
+		}
 	}
 }
 
@@ -422,6 +436,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.mu.RUnlock()
 
 	// E2EE cleanup is handled by the KeyStore (persistent storage)
+
+	if a.backend != nil {
+		if err := a.backend.Close(); err != nil {
+			a.logger.Error("failed to close database backend during shutdown: %v", err)
+		}
+	}
 
 	if a.server != nil {
 		err := a.server.Shutdown(ctx)
@@ -833,7 +853,7 @@ func (a *App) setupRTCSignaling() {
 		
 		target := userID
 		if bundle.DeviceID != "" {
-			target = userID + ":" + bundle.DeviceID
+			target = userID + "::" + bundle.DeviceID
 		}
 
 		if err := a.e2eeStore.SavePreKeyBundle(ctx, target, &bundle); err != nil {
@@ -867,7 +887,7 @@ func (a *App) setupRTCSignaling() {
 			if a.device != nil {
 				devices, _ := a.device.GetDevices(ctx, targetUserID)
 				for _, d := range devices {
-					bundle, err := a.e2eeStore.LoadPreKeyBundle(ctx, targetUserID+":"+d.DeviceID)
+					bundle, err := a.e2eeStore.LoadPreKeyBundle(ctx, targetUserID+"::"+d.DeviceID)
 					if err == nil && bundle != nil {
 						bundles = append(bundles, bundle)
 					}
@@ -901,7 +921,7 @@ func (a *App) setupRTCSignaling() {
 		defer cancel()
 
 		userID, deviceID := splitSessionID(sig.From)
-		target := userID + ":" + deviceID
+		target := userID + "::" + deviceID
 		
 		// Load existing bundle, add new OPKs, and save
 		existing, _ := a.e2eeStore.LoadPreKeyBundle(ctx, target)
@@ -932,7 +952,7 @@ func (a *App) setupRTCSignaling() {
 		// sig.To represents the destination UserID. We fan out to each device in the payload.
 		targetUserID := sig.To
 		for deviceID, encPayload := range fanout.Payloads {
-			targetPeerID := targetUserID + ":" + deviceID
+			targetPeerID := targetUserID + "::" + deviceID
 			
 			// Reconstruct a standard message signal for the target device
 			deviceSig := core.Signal{
