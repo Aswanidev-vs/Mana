@@ -64,9 +64,9 @@ func main() {
 	productStore := app.ProductStore()
 
 	// 2b. Run Kuruvi Local Migrations AFTER framework creates base tables
-	migrationDB, err := sql.Open("sqlite", cfg.DatabaseDSN)
-	if err != nil {
-		log.Printf("Migration db open error: %v", err)
+	migrationDB := app.DBBackend()
+	if migrationDB == nil {
+		log.Printf("Migration db error: backend is nil")
 	} else {
 		// Kuruvi Local Specialized Tables
 		kuruviTables := `
@@ -106,12 +106,11 @@ func main() {
 			`ALTER TABLE accounts ADD COLUMN email TEXT`,
 		}
 		for _, q := range queries {
-			_, err = migrationDB.Exec(q)
+			_, err := migrationDB.Exec(q)
 			if err != nil && !strings.Contains(err.Error(), "duplicate column name") && !strings.Contains(err.Error(), "no such table") {
 				log.Printf("Migration error for %s: %v", q, err)
 			}
 		}
-		migrationDB.Close()
 	}
 
 	// Verify stores were wired up properly
@@ -198,9 +197,8 @@ func main() {
 		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 		kuruviID := fmt.Sprintf("%s#%04d", req.Username, rng.Intn(10000))
 
-		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
-		if err == nil {
-			defer dbConn.Close()
+		dbConn := app.DBBackend()
+		if dbConn != nil {
 			_, err = dbConn.Exec("INSERT INTO kuruvi_profiles (user_id, kuruvi_id, phone, last_username_update) VALUES (?, ?, ?, ?)",
 				frameworkUserID, kuruviID, req.Phone, time.Now().Add(-24*time.Hour))
 			if err != nil {
@@ -282,14 +280,13 @@ func main() {
 
 		log.Printf("[Auth] Login success: %s (id: %s)", req.Username, userID)
 
-		// 1. Open a local DB connection to retrieve Kuruvi-specific metadata
-		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
-		if err != nil {
-			log.Printf("[Auth] Login db open error: %v", err)
-			http.Error(w, "Database error", http.StatusInternalServerError)
+		// 1. Use shared DB connection to retrieve Kuruvi-specific metadata
+		dbConn := app.DBBackend()
+		if dbConn == nil {
+			log.Printf("[Auth] Login db error: backend is nil")
+			http.Error(w, "Database unavailable", http.StatusInternalServerError)
 			return
 		}
-		defer dbConn.Close()
 
 		// 2. Retrieve Kuruvi Unique ID
 		var kuruviID string
@@ -363,14 +360,13 @@ func main() {
 
 		log.Printf("[Auth] Phone login success: %s (id: %s)", req.Phone, userID)
 
-		// 1. Open a local DB connection to retrieve Kuruvi-specific metadata
-		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
-		if err != nil {
-			log.Printf("[Auth] Phone login db open error: %v", err)
-			http.Error(w, "Database error", http.StatusInternalServerError)
+		// 1. Use shared DB connection to retrieve Kuruvi-specific metadata
+		dbConn := app.DBBackend()
+		if dbConn == nil {
+			log.Printf("[Auth] Phone login db error: backend is nil")
+			http.Error(w, "Database unavailable", http.StatusInternalServerError)
 			return
 		}
-		defer dbConn.Close()
 
 		// 2. Retrieve Kuruvi Unique ID
 		var kuruviID string
@@ -444,14 +440,13 @@ func main() {
 
 		log.Printf("[Auth] Email login success: %s (id: %s)", req.Email, userID)
 
-		// 1. Open a local DB connection to retrieve Kuruvi-specific metadata
-		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
-		if err != nil {
-			log.Printf("[Auth] Email login db open error: %v", err)
-			http.Error(w, "Database error", http.StatusInternalServerError)
+		// 1. Use shared DB connection to retrieve Kuruvi-specific metadata
+		dbConn := app.DBBackend()
+		if dbConn == nil {
+			log.Printf("[Auth] Email login db error: backend is nil")
+			http.Error(w, "Database unavailable", http.StatusInternalServerError)
 			return
 		}
-		defer dbConn.Close()
 
 		// 2. Retrieve Kuruvi Unique ID
 		var kuruviID string
@@ -486,14 +481,13 @@ func main() {
 			return
 		}
 
-		// Directly update the DB since AccountStore doesn't expose a SetPassword interface yet
-		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
-		if err != nil {
-			log.Printf("[Auth] Reset Password db open error: %v", err)
+		// Directly update the DB using shared connection
+		dbConn := app.DBBackend()
+		if dbConn == nil {
+			log.Printf("[Auth] Reset Password db error: backend is nil")
 			http.Error(w, "Database error", http.StatusInternalServerError)
 			return
 		}
-		defer dbConn.Close()
 
 		// Manually hash password using bcrypt to maintain framework compatibility
 		hashedBytes, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
@@ -540,14 +534,13 @@ func main() {
 			return
 		}
 
-		// Open db to query accounts
-		db, err := sql.Open("sqlite", cfg.DatabaseDSN)
-		if err != nil {
-			log.Printf("Search db open error: %v", err)
+		// Use shared connection to query accounts
+		db := app.DBBackend()
+		if db == nil {
+			log.Printf("Search db error: backend is nil")
 			http.Error(w, "db error", http.StatusInternalServerError)
 			return
 		}
-		defer db.Close()
 
 		// Perform Kuruvi domain-specific JOIN search connecting the underlying framework ID
 		queryStr := `
@@ -603,12 +596,11 @@ func main() {
 
 		ctx := r.Context()
 
-		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
-		if err != nil {
+		dbConn := app.DBBackend()
+		if dbConn == nil {
 			http.Error(w, "Database unavailable", http.StatusInternalServerError)
 			return
 		}
-		defer dbConn.Close()
 
 		// Kuruvi 2-Minute Constraint Local Check
 		var lastUpdate sql.NullTime
@@ -619,8 +611,7 @@ func main() {
 		}
 
 		// Mutate Framework Accounts table locally directly (Kuruvi Extension)
-		_, err = dbConn.ExecContext(ctx, "UPDATE accounts SET username = ? WHERE user_id = ?", req.NewUsername, userID)
-		if err != nil {
+		if _, err := dbConn.ExecContext(ctx, "UPDATE accounts SET username = ? WHERE user_id = ?", req.NewUsername, userID); err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				http.Error(w, "username already taken", http.StatusConflict)
 			} else {
@@ -680,9 +671,8 @@ func main() {
 		newRoom := app.RoomManager().Create(roomID, req.GroupName, "group", userID)
 
 		// Persist Kuruvi Group Metadata
-		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
-		if err == nil {
-			defer dbConn.Close()
+		dbConn := app.DBBackend()
+		if dbConn != nil {
 			now := time.Now()
 			_, _ = dbConn.Exec("INSERT INTO kuruvi_groups (room_id, name, creator_id, created_at) VALUES (?, ?, ?, ?)",
 				roomID, req.GroupName, userID, now)
@@ -724,12 +714,11 @@ func main() {
 			return
 		}
 
-		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
-		if err != nil {
-			http.Error(w, "Database error", http.StatusInternalServerError)
+		dbConn := app.DBBackend()
+		if dbConn == nil {
+			http.Error(w, "Database unavailable", http.StatusInternalServerError)
 			return
 		}
-		defer dbConn.Close()
 
 		switch r.Method {
 		case http.MethodGet:
@@ -782,9 +771,8 @@ func main() {
 				return
 			}
 
-			_, err = dbConn.Exec("INSERT OR IGNORE INTO kuruvi_group_members (room_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)",
-				roomID, req.UserID, "member", time.Now())
-			if err != nil {
+			if _, err := dbConn.Exec("INSERT OR IGNORE INTO kuruvi_group_members (room_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)",
+				roomID, req.UserID, "member", time.Now()); err != nil {
 				http.Error(w, "Failed to add member", http.StatusInternalServerError)
 				return
 			}
@@ -811,8 +799,7 @@ func main() {
 				return
 			}
 
-			_, err = dbConn.Exec("DELETE FROM kuruvi_group_members WHERE room_id = ? AND user_id = ?", roomID, userID)
-			if err != nil {
+			if _, err := dbConn.Exec("DELETE FROM kuruvi_group_members WHERE room_id = ? AND user_id = ?", roomID, userID); err != nil {
 				http.Error(w, "Failed to remove member", http.StatusInternalServerError)
 				return
 			}
@@ -840,12 +827,11 @@ func main() {
 			return
 		}
 
-		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
-		if err != nil {
-			http.Error(w, "Database error", http.StatusInternalServerError)
+		dbConn := app.DBBackend()
+		if dbConn == nil {
+			http.Error(w, "Database unavailable", http.StatusInternalServerError)
 			return
 		}
-		defer dbConn.Close()
 
 		// Verify caller is admin
 		var role string
@@ -881,12 +867,11 @@ func main() {
 			return
 		}
 
-		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
-		if err != nil {
-			http.Error(w, "Database error", http.StatusInternalServerError)
+		dbConn := app.DBBackend()
+		if dbConn == nil {
+			http.Error(w, "Database unavailable", http.StatusInternalServerError)
 			return
 		}
-		defer dbConn.Close()
 
 		// Check if the user is the only admin — if so, they can't leave without deleting
 		var role string
@@ -900,8 +885,7 @@ func main() {
 			}
 		}
 
-		_, err = dbConn.Exec("DELETE FROM kuruvi_group_members WHERE room_id = ? AND user_id = ?", roomID, selfID)
-		if err != nil {
+		if _, err := dbConn.Exec("DELETE FROM kuruvi_group_members WHERE room_id = ? AND user_id = ?", roomID, selfID); err != nil {
 			http.Error(w, "Failed to leave group", http.StatusInternalServerError)
 			return
 		}
@@ -1012,12 +996,11 @@ func main() {
 			return
 		}
 
-		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
-		if err != nil {
+		dbConn := app.DBBackend()
+		if dbConn == nil {
 			http.Error(w, "Database unavailable", http.StatusInternalServerError)
 			return
 		}
-		defer dbConn.Close()
 
 		var contactsList []map[string]interface{}
 
@@ -1122,9 +1105,8 @@ func main() {
 		// Persist interaction in kuruvi_contacts for both parties!
 		// Direct to-user messaging implies TargetID is a userID.
 		if msg.TargetID != "" && !strings.HasPrefix(msg.TargetID, "group-") {
-			dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
-			if err == nil {
-				defer dbConn.Close()
+			dbConn := app.DBBackend()
+			if dbConn != nil {
 				q := `
 					INSERT INTO kuruvi_contacts (user_id, contact_id, last_msg, updated_at) 
 					VALUES (?, ?, ?, ?)
@@ -1179,18 +1161,16 @@ func main() {
 			return
 		}
 
-		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
-		if err != nil {
+		dbConn := app.DBBackend()
+		if dbConn == nil {
 			http.Error(w, "DB error", http.StatusInternalServerError)
 			return
 		}
-		defer dbConn.Close()
 
-		_, err = dbConn.Exec(`
+		if _, err := dbConn.Exec(`
 			INSERT OR IGNORE INTO kuruvi_contacts (user_id, contact_id, last_msg, updated_at) 
 			VALUES (?, ?, ?, ?)`, 
-			selfID, req.ContactID, "New contact", time.Now())
-		if err != nil {
+			selfID, req.ContactID, "New contact", time.Now()); err != nil {
 			http.Error(w, "persistence error", http.StatusInternalServerError)
 			return
 		}
@@ -1263,9 +1243,8 @@ func main() {
 		log.Printf("[Auth] Processing deletion request for user: %s", selfID)
 
 		// 1. Delete Kuruvi-specific data first (profiles, contacts)
-		dbConn, err := sql.Open("sqlite", cfg.DatabaseDSN)
-		if err == nil {
-			defer dbConn.Close()
+		dbConn := app.DBBackend()
+		if dbConn != nil {
 			dbConn.Exec("DELETE FROM kuruvi_profiles WHERE user_id = ?", selfID)
 			dbConn.Exec("DELETE FROM kuruvi_contacts WHERE user_id = ? OR contact_id = ?", selfID, selfID)
 		}

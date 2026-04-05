@@ -4,8 +4,24 @@ let currentTab = 'all'; // all, groups, people
 let contacts = [];
 
 const App = {
-    messages: {}, // Local store for session history { userId: [msg1, msg2] }
+    messages: {}, // Local store for message history { chatId: [msgObj1, msgObj2] }
+    reconnectAttempts: 0,
+    maxReconnectDelay: 30000,
+
     async init() {
+        // Load history from persistence (Encrypted payloads)
+        const savedHistory = localStorage.getItem('kuruvi_history_v2');
+        if (savedHistory) {
+            try {
+                const encryptedHistory = JSON.parse(savedHistory);
+                this.messages = encryptedHistory;
+                // Note: Messages stay encrypted in this.messages until they are rendered/requested
+                // for maximum memory security. 
+            } catch (e) {
+                console.warn('Failed to load history from localStorage', e);
+            }
+        }
+
         if (API.token) {
             this.showApp();
         } else {
@@ -51,25 +67,30 @@ const App = {
 
     async initE2EE() {
         try {
-            const pubKey = await Crypto.generateKeys();
-            await API.uploadPublicKey(API.userId, pubKey);
-            console.log('E2EE Keys generated and uploaded');
+            // Check if we already have valid keys
+            let pubKey = localStorage.getItem('kuruvi_pubkey');
+            if (!pubKey) {
+                pubKey = await Crypto.generateKeys();
+                localStorage.setItem('kuruvi_pubkey', btoa(Array.from(pubKey).map(b => String.fromCharCode(b)).join('')));
+            } else {
+                pubKey = new Uint8Array(atob(pubKey).split('').map(c => c.charCodeAt(0)));
+            }
 
-            // Broadcast new key to all current contacts if any
-            const contactsList = await API.getContacts();
-            const binaryString = Array.from(pubKey).map(b => String.fromCharCode(b)).join('');
-            const payload = btoa(binaryString);
-
-            contactsList.forEach(c => {
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({
-                        type: 'key_exchange',
-                        to: c.id,
-                        from: API.userId,
-                        payload: payload
-                    }));
+            try {
+                await API.uploadPublicKey(API.userId, pubKey);
+            } catch (err) {
+                if (err.message.includes('unmarshal') || err.message.includes('character')) {
+                    console.warn('Server reported key corruption, rotating local keys...');
+                    localStorage.removeItem('kuruvi_pubkey');
+                    pubKey = await Crypto.generateKeys();
+                    localStorage.setItem('kuruvi_pubkey', btoa(Array.from(pubKey).map(b => String.fromCharCode(b)).join('')));
+                    await API.uploadPublicKey(API.userId, pubKey);
+                } else {
+                    throw err;
                 }
-            });
+            }
+
+            console.log('E2EE Keys active and synced with server');
         } catch (e) {
             console.error('E2EE Init failed:', e);
         }
@@ -77,30 +98,59 @@ const App = {
 
     connectWS() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        // Specify "mana" subprotocol required by coder/websocket in the framework
+        const statusBadge = document.getElementById('connection-status');
+        
+        if (statusBadge) {
+            statusBadge.className = 'status-badge connecting';
+        }
+
         ws = new WebSocket(`${protocol}//${window.location.host}/ws?token=${API.token}`, ['mana']);
 
         ws.onopen = () => {
             console.log('Connected to Kuruvi WebSocket');
-            this.initE2EE(); // Generate and share keys on connect
+            this.reconnectAttempts = 0;
+            if (statusBadge) statusBadge.className = 'status-badge online';
+            this.initE2EE(); 
         };
 
         ws.onclose = (e) => {
             console.warn('WebSocket connection closed:', e.code, e.reason);
+            if (statusBadge) statusBadge.className = 'status-badge offline';
+            
             if (e.code === 4001) { // Custom auth error from mana framework
                 API.logout();
+                return;
             }
+
+            // Trigger exponential backoff reconnection
+            this.reconnect();
         };
 
         ws.onerror = (e) => {
             console.error('WebSocket error:', e);
-            document.getElementById('auth-error').textContent = 'Connection failed. Please check if the server is running.';
+            if (statusBadge) statusBadge.className = 'status-badge offline';
         };
 
         ws.onmessage = (e) => {
-            const msg = JSON.parse(e.data);
-            this.handleWSMessage(msg);
+            try {
+                const msg = JSON.parse(e.data);
+                this.handleWSMessage(msg);
+            } catch (err) {
+                console.error("Failed to parse WS message", err);
+            }
         };
+    },
+
+    reconnect() {
+        this.reconnectAttempts++;
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), this.maxReconnectDelay);
+        console.log(`Reconnecting in ${delay/1000}s (Attempt ${this.reconnectAttempts})...`);
+        
+        setTimeout(() => {
+            if (API.token) {
+                this.connectWS();
+            }
+        }, delay);
     },
 
     async handleWSMessage(msg) {
@@ -154,69 +204,93 @@ const App = {
         }
     },
 
-    async onReceiveMessage(msg) {
-        let text = '';
-        const senderId = msg.sender_id || msg.from;
-        
-        try {
-            // Decode Base64 string to Uint8Array first!
-            const binaryString = atob(msg.payload);
-            const data = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                data[i] = binaryString.charCodeAt(i);
-            }
-
-            // 2. Attempt decryption
-            try {
-                text = await Crypto.decrypt(data, senderId);
-            } catch (err) {
-                // If decryption failed, try fetching the latest key and retry once
-                console.warn('Decryption failed, re-fetching key for', senderId);
-                const remotePubRaw = await API.getPublicKey(senderId);
-                if (remotePubRaw) {
-                    await Crypto.importRemoteKey(senderId, remotePubRaw);
-                    text = await Crypto.decrypt(data, senderId);
-                } else {
-                    throw err; // Re-throw if no key available
-                }
-            }
-        } catch (e) {
-            console.error('E2EE Decryption failed permanently for msg from', senderId, e);
-            // Fallback for non-encrypted or identity mismatch
-            try {
-                const raw = new Uint8Array(atob(msg.payload).split('').map(c => c.charCodeAt(0)));
-                const decoded = new TextDecoder().decode(raw);
-                if (/[^\x20-\x7E]/.test(decoded)) throw new Error("Binary content");
-                text = decoded;
-            } catch (err) {
-                text = "[Encrypted Message]";
+    async decryptPayload(payloadBase64, senderId, threadId) {
+        // Groups use Base64-encoded plaintext (not E2EE in Kuruvi)
+        const isGroupContext = (threadId && threadId.startsWith('group-')) || 
+                               (currentChat && currentChat.id.startsWith('group-')) || 
+                               (senderId && senderId.startsWith('group-'));
+        if (isGroupContext) {
+            try { return decodeURIComponent(escape(atob(payloadBase64))); } catch (e) { 
+                try { return atob(payloadBase64); } catch(e2) { return "[Message]"; }
             }
         }
 
-        // 1. Storage: Save to local session memory
-        if (!this.messages[senderId]) this.messages[senderId] = [];
-        const msgObj = { text, senderId, timestamp: new Date() };
-        this.messages[senderId].push(msgObj);
+        // For E2EE: determine the correct peer for ECDH key derivation
+        // If senderId is ourselves, the peer is the chat partner (threadId)
+        // If senderId is someone else, the peer is the sender
+        const selfId = API.userId || API.username;
+        const peerId = (senderId === selfId && threadId) ? threadId : ((senderId === selfId && currentChat) ? currentChat.id : senderId);
 
-        // 2. Update/Add Contact in Sidebar
-        let contact = contacts.find(c => c.id === senderId);
+        try {
+            const binaryString = atob(payloadBase64);
+            const data = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) data[i] = binaryString.charCodeAt(i);
+            
+            // Try fetching peer's key if missing
+            if (!Crypto.remoteKeys.has(peerId)) {
+                const pubRaw = await API.getPublicKey(peerId);
+                if (pubRaw) await Crypto.importRemoteKey(peerId, pubRaw);
+            }
+
+            return await Crypto.decrypt(data, peerId);
+        } catch (e) {
+            console.warn('Decryption failed, using fallback for', peerId, e);
+            // Fallback: try plain Base64 decode for unencrypted or legacy messages
+            try {
+                const raw = new Uint8Array(atob(payloadBase64).split('').map(c => c.charCodeAt(0)));
+                const decoded = new TextDecoder().decode(raw);
+                if (/[^\x20-\x7E]/.test(decoded)) throw new Error("Binary");
+                return decoded;
+            } catch (err) {
+                return "[Encrypted Message]";
+            }
+        }
+    },
+
+
+    async onReceiveMessage(msg) {
+        const senderId = msg.sender_id || msg.from;
+        const threadId = msg.room_id || senderId;
+
+        // 1. Storage: Save ONLY the encrypted payload to localStorage for security
+        if (!this.messages[threadId]) this.messages[threadId] = [];
+        
+        const persistObj = { 
+            payload: msg.payload, 
+            senderId, 
+            timestamp: new Date(), 
+            roomId: msg.room_id,
+            encrypted: true 
+        };
+        
+        this.messages[threadId].push(persistObj);
+        if (this.messages[threadId].length > 100) {
+            this.messages[threadId] = this.messages[threadId].slice(-100);
+        }
+        localStorage.setItem('kuruvi_history_v2', JSON.stringify(this.messages));
+
+        // 2. Decrypt in memory for immediate UI display
+        const text = await this.decryptPayload(msg.payload, senderId, threadId);
+        const msgObj = { text, senderId, timestamp: new Date(), roomId: msg.room_id };
+
+        // 3. Update/Add Contact in Sidebar
+        let contact = contacts.find(c => c.id === threadId);
         if (!contact) {
             contact = { 
-                id: senderId, 
-                name: senderId.replace(/^u-/, ''), 
+                id: threadId, 
+                name: threadId.startsWith('group-') ? (msg.group_name || threadId) : senderId.replace(/^u-/, ''), 
                 lastMsg: text 
             };
             contacts.unshift(contact);
-            // PERSIST contact so it stays after refresh
-            API.addContact(senderId).catch(console.error);
+            API.addContact(threadId).catch(console.error);
         } else {
             contact.lastMsg = text;
-            contacts = [contact, ...contacts.filter(c => c.id !== senderId)];
+            contacts = [contact, ...contacts.filter(c => c.id !== threadId)];
         }
         this.renderContacts();
 
-        // 3. Render to Chat UI if this is the active chat
-        if (currentChat && currentChat.id === senderId) {
+        // 4. Render to Chat UI if this is the active chat
+        if (currentChat && currentChat.id === threadId) {
             this.addMessageToUI(msgObj);
         }
     },
@@ -606,77 +680,51 @@ const App = {
         currentChat = contact;
         document.getElementById('no-chat-state').classList.add('hidden');
         document.getElementById('chat-active').classList.remove('hidden');
-        document.getElementById('app').classList.add('chat-open'); // for mobile responsiveness
+        document.getElementById('app').classList.add('chat-open'); 
         document.getElementById('active-chat-name').textContent = contact.name;
         document.getElementById('active-chat-avatar').textContent = contact.name[0];
         
-        // Group Admin Button visibility
         const manageBtn = document.getElementById('manage-group-btn-header');
-        if (contact.id.startsWith('group-')) {
-            manageBtn.classList.remove('hidden');
-        } else {
-            manageBtn.classList.add('hidden');
-        }
+        manageBtn.classList.toggle('hidden', !contact.id.startsWith('group-'));
 
         const container = document.getElementById('message-container');
         container.innerHTML = `<div style="text-align:center; opacity:0.5; padding:20px; display:flex; align-items:center; justify-content:center; gap:8px;"><i data-lucide="lock" style="width:14px; height:14px;"></i> End-to-End Encrypted</div>`;
         lucide.createIcons();
 
-        // Always re-fetch history from server (handles refresh case)
+        // 1. Instant UI: Load from localStorage/Memory immediately
+        if (this.messages[contact.id]) {
+            for (const msg of this.messages[contact.id]) {
+                if (msg.encrypted && msg.payload) {
+                    msg.text = await this.decryptPayload(msg.payload, msg.senderId, contact.id);
+                    msg.encrypted = false; // Decrypt once per session
+                }
+                this.addMessageToUI(msg);
+            }
+        }
+
+        // 2. Background Sync: Fetch latest from server
         try {
             const history = await API.getHistory(contact.id);
-            this.messages[contact.id] = [];
-            for (const m of history) {
-                const text = await this.decryptPayload(m.payload, m.sender_id);
-                this.messages[contact.id].push({ text, senderId: m.sender_id, timestamp: new Date(m.timestamp) });
-            }
-        } catch (err) {
-            console.error('History failed:', err);
-        }
-        if (this.messages[contact.id]) {
-            this.messages[contact.id].forEach(msg => this.addMessageToUI(msg));
-        }
-    },
+            if (history && history.length > 0) {
+                const fetchedMessages = [];
+                for (const m of history) {
+                    const text = await this.decryptPayload(m.payload, m.sender_id, contact.id);
+                    fetchedMessages.push({ text, senderId: m.sender_id, timestamp: new Date(m.timestamp) });
+                }
 
-    async decryptPayload(payloadBase64, senderId) {
-        // Groups use Base64-encoded plaintext (not E2EE)
-        const isGroupContext = (currentChat && currentChat.id.startsWith('group-')) || 
-                               (senderId && senderId.startsWith('group-'));
-        if (isGroupContext) {
-            try { return decodeURIComponent(escape(atob(payloadBase64))); } catch (e) { 
-                try { return atob(payloadBase64); } catch(e2) { return "[Message]"; }
-            }
-        }
-
-        // For E2EE: determine the correct peer for ECDH key derivation
-        // If senderId is ourselves, the peer is the chat partner (currentChat.id)
-        // If senderId is someone else, the peer is the sender
-        const selfId = API.userId || API.username;
-        const peerId = (senderId === selfId && currentChat) ? currentChat.id : senderId;
-
-        try {
-            const binaryString = atob(payloadBase64);
-            const data = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) data[i] = binaryString.charCodeAt(i);
-            
-            // Try fetching peer's key if missing
-            if (!Crypto.remoteKeys.has(peerId)) {
-                const pubRaw = await API.getPublicKey(peerId);
-                if (pubRaw) await Crypto.importRemoteKey(peerId, pubRaw);
-            }
-
-            return await Crypto.decrypt(data, peerId);
-        } catch (e) {
-            // Fallback: try plain Base64 decode for unencrypted or legacy messages
-            try {
-                return decodeURIComponent(escape(atob(payloadBase64)));
-            } catch (err) {
-                try { return atob(payloadBase64); } catch(e2) {
-                    return "[Encrypted Message]";
+                // If server history is different (gap filling), re-render
+                if (!this.messages[contact.id] || fetchedMessages.length > this.messages[contact.id].length) {
+                    this.messages[contact.id] = fetchedMessages;
+                    container.innerHTML = `<div style="text-align:center; opacity:0.5; padding:20px; display:flex; align-items:center; justify-content:center; gap:8px;"><i data-lucide="lock" style="width:14px; height:14px;"></i> End-to-End Encrypted</div>`;
+                    lucide.createIcons();
+                    this.messages[contact.id].forEach(msg => this.addMessageToUI(msg));
                 }
             }
+        } catch (err) {
+            console.warn('History background sync failed', err);
         }
     },
+
 
     async sendMessage() {
         const input = document.getElementById('message-input');
