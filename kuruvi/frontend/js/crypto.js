@@ -3,12 +3,40 @@ const Crypto = {
     remoteKeys: new Map(), // peerID -> CryptoKey
 
     async generateKeys() {
+        // Check if we have existing keys in storage
+        const storedKey = localStorage.getItem('kuruvi_keypair');
+        if (storedKey) {
+            try {
+                const { public: pubB64, private: privB64 } = JSON.parse(storedKey);
+                const pubRaw = new Uint8Array(atob(pubB64).split('').map(c => c.charCodeAt(0)));
+                const privRaw = new Uint8Array(atob(privB64).split('').map(c => c.charCodeAt(0)));
+                
+                const publicKey = await crypto.subtle.importKey('raw', pubRaw, { name: 'X25519' }, true, []);
+                const privateKey = await crypto.subtle.importKey('pkcs8', privRaw, { name: 'X25519' }, false, ['deriveBits', 'deriveKey']);
+                
+                this.keyPair = { publicKey, privateKey };
+                return pubRaw;
+            } catch (e) {
+                console.warn('Failed to restore keys, generating new ones:', e);
+            }
+        }
+
         this.keyPair = await crypto.subtle.generateKey(
             { name: 'X25519' },
             true,
             ['deriveBits', 'deriveKey']
         );
+
         const pubRaw = await crypto.subtle.exportKey('raw', this.keyPair.publicKey);
+        const privRaw = await crypto.subtle.exportKey('pkcs8', this.keyPair.privateKey);
+
+        // Save to storage
+        const keyPairB64 = {
+            public: btoa(String.fromCharCode(...new Uint8Array(pubRaw))),
+            private: btoa(String.fromCharCode(...new Uint8Array(privRaw)))
+        };
+        localStorage.setItem('kuruvi_keypair', JSON.stringify(keyPairB64));
+
         return new Uint8Array(pubRaw);
     },
 

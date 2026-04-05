@@ -170,6 +170,33 @@ func (s *JSONMessageStore) LatestSequenceForUser(ctx context.Context, userID str
 	return latest
 }
 
+func (s *JSONMessageStore) GetConversation(ctx context.Context, userID, contactID string, limit int) ([]core.Message, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = 50
+	}
+
+	result := make([]core.Message, 0)
+	// Iterate backwards to get most recent messages
+	count := 0
+	for i := len(s.messages) - 1; i >= 0 && count < limit; i-- {
+		m := s.messages[i].Message
+		isMe := m.SenderID == userID && (m.TargetID == contactID || slices.Contains(s.messages[i].Recipients, contactID))
+		isThem := m.SenderID == contactID && (m.TargetID == userID || slices.Contains(s.messages[i].Recipients, userID))
+
+		if isMe || isThem {
+			result = append(result, m)
+			count++
+		}
+	}
+
+	// Reverse to bring back to chronological order
+	slices.Reverse(result)
+	return result, nil
+}
+
 func (s *JSONMessageStore) updateDelivery(messageID, userID string, state DeliveryState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

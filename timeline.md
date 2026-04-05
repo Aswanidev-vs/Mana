@@ -183,6 +183,9 @@ Mana is in a strong prototype / production-ready framework state, but the phases
 - **Sync Optimization**: Implemented `message_sync` fanout for offline message replay.
 - **Handshake Tuning**: Developed the `broadcast_key` protocol to refresh public keys across peer-to-peer connections upon session initialization.
 
+
+e2ee for group chat is future implementaion.
+
 ---
 
 **Overall Project Status: Framework is now in a "Hardened Prototype" state, suitable for production-scale MVPs.**

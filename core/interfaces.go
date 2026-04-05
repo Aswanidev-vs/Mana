@@ -13,6 +13,7 @@ type MessageStore interface {
 	SyncForUserSince(ctx context.Context, userID string, since time.Time) []Message
 	SyncForUserAfterSequence(ctx context.Context, userID string, after uint64, limit int) ([]Message, bool)
 	LatestSequenceForUser(ctx context.Context, userID string) uint64
+	GetConversation(ctx context.Context, userID, contactID string, limit int) ([]Message, error)
 }
 
 // AccountStore defines the interface for user authentication and management.
@@ -20,6 +21,7 @@ type AccountStore interface {
 	CreateUser(ctx context.Context, username, password string) error
 	Authenticate(ctx context.Context, username, password string) (userID string, err error)
 	GetUser(ctx context.Context, userID string) (User, error)
+	DeleteUser(ctx context.Context, userID string) error
 }
 
 // ProfileStore defines the interface for user profiles.

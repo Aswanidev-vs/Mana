@@ -1,5 +1,6 @@
 let ws;
 let currentChat = null;
+let currentTab = 'all'; // all, groups, people
 let contacts = [];
 
 const App = {
@@ -31,6 +32,17 @@ const App = {
     async loadContacts() {
         try {
             contacts = await API.getContacts();
+            // Proactively fetch keys for all direct contacts to ensure history can be decrypted
+            for (const c of contacts) {
+                if (!c.id.startsWith('group-')) {
+                    try {
+                        const pubRaw = await API.getPublicKey(c.id);
+                        if (pubRaw) await Crypto.importRemoteKey(c.id, pubRaw);
+                    } catch (e) {
+                        console.warn('Key fetch failed for', c.id, e);
+                    }
+                }
+            }
         } catch (e) {
             console.warn('Failed to load contacts:', e);
             contacts = [];
@@ -121,6 +133,10 @@ const App = {
                 console.log('Received ICE Candidate');
                 RTC.addIceCandidate(msg.candidate);
                 break;
+            case 'hangup':
+                console.log('Received Hangup');
+                this.endCall(false); // Don't send hangup back to avoid loops
+                break;
             case 'track_added':
                 console.log('SFU: New track published');
                 ws.send(JSON.stringify({
@@ -191,6 +207,8 @@ const App = {
                 lastMsg: text 
             };
             contacts.unshift(contact);
+            // PERSIST contact so it stays after refresh
+            API.addContact(senderId).catch(console.error);
         } else {
             contact.lastMsg = text;
             contacts = [contact, ...contacts.filter(c => c.id !== senderId)];
@@ -247,8 +265,13 @@ const App = {
         };
         document.getElementById('close-reset-btn').onclick = () => {
             resetModal.classList.add('hidden');
-            document.getElementById('reset-error').textContent = '';
         };
+
+        // Account Deletion
+        document.getElementById('delete-account-btn').onclick = () => this.confirmDeleteAccount();
+        document.getElementById('confirm-cancel').onclick = () => document.getElementById('confirm-modal').classList.add('hidden');
+        document.getElementById('confirm-execute').onclick = () => this.executeDeleteAccount();
+
         document.getElementById('submit-reset-btn').onclick = async () => {
             const identifier = document.getElementById('reset-identifier').value.trim();
             const newPassword = document.getElementById('reset-password').value;
@@ -259,7 +282,6 @@ const App = {
                 return;
             }
             try {
-                // Call API 
                 await API.resetPassword(identifier, newPassword);
                 errEl.style.color = 'var(--accent-cyan)';
                 errEl.textContent = 'Password reset successfully! You can now login.';
@@ -283,10 +305,8 @@ const App = {
             const toggleLink = document.getElementById('toggle-auth');
 
             if (regFields.classList.contains('hidden')) {
-                // Switch to Sign Up mode
                 regFields.classList.remove('hidden');
                 tabsContainer.classList.add('hidden');
-                // Force Username tab if registering
                 this.currentLoginTab = 'username';
                 document.querySelectorAll('.login-tab').forEach(t => t.classList.remove('active'));
                 document.querySelector('[data-tab="username"]').classList.add('active');
@@ -297,7 +317,6 @@ const App = {
                 toggleText.textContent = 'Already have an account?';
                 toggleLink.textContent = 'Sign In';
             } else {
-                // Switch to Sign In mode
                 regFields.classList.add('hidden');
                 tabsContainer.classList.remove('hidden');
                 btn.textContent = 'Sign In';
@@ -317,7 +336,6 @@ const App = {
             try {
                 let result;
                 if (isLogin) {
-                    // Sign In Logic (Multi-method)
                     switch(this.currentLoginTab) {
                         case 'username':
                             const u = document.getElementById('username').value.trim();
@@ -339,7 +357,6 @@ const App = {
                             break;
                     }
                 } else {
-                    // Sign Up Logic
                     const u = document.getElementById('username').value.trim();
                     const p = document.getElementById('password').value;
                     const ph = document.getElementById('reg-phone').value.trim();
@@ -352,9 +369,7 @@ const App = {
                 }
 
                 if (result) {
-                    document.getElementById('login-modal').classList.add('hidden');
-                    document.getElementById('app').classList.remove('hidden');
-                    this.init();
+                    this.showApp();
                 }
             } catch (err) {
                 errorEl.style.color = 'var(--danger)';
@@ -362,38 +377,28 @@ const App = {
             }
         };
 
-        // Unified logout functionality
-        document.getElementById('logout-btn').onclick = () => API.logout();
+        const logoutBtn = document.getElementById('logout-btn');
+        if (logoutBtn) logoutBtn.onclick = () => API.logout();
 
-        // Group Modal Logic
-        const newGroupBtn = document.getElementById('new-group-btn');
+        // Group Modal
         const groupModal = document.getElementById('group-modal');
-        const closeGroupBtn = document.getElementById('close-group-btn');
-        
-        newGroupBtn.onclick = () => {
+        document.getElementById('new-group-btn').onclick = () => {
             document.getElementById('group-name-input').value = '';
             document.getElementById('group-error').textContent = '';
             groupModal.classList.remove('hidden');
         };
-
-        closeGroupBtn.onclick = () => groupModal.classList.add('hidden');
-
+        document.getElementById('close-group-btn').onclick = () => groupModal.classList.add('hidden');
         document.getElementById('create-group-btn').onclick = async () => {
             const groupName = document.getElementById('group-name-input').value.trim();
             const errEl = document.getElementById('group-error');
             if (!groupName) return;
-            
             try {
                 const res = await API.createGroup(groupName, []);
                 errEl.style.color = 'var(--accent-cyan)';
-                errEl.textContent = 'Group created! Select it to start chatting.';
-                
-                // Set active target and clear modal
+                errEl.textContent = 'Group created!';
                 setTimeout(() => {
                     groupModal.classList.add('hidden');
-                    App.state.activeTarget = res.room_id;
-                    App.renderChatArea(res.room_id, groupName, true);
-                    App.renderContacts();
+                    this.selectChat({ id: res.room_id, name: groupName, lastMsg: 'Group created' });
                 }, 1000);
             } catch (e) {
                 errEl.style.color = 'var(--danger)';
@@ -401,45 +406,49 @@ const App = {
             }
         };
 
-        // Profile Modal Logic
-        const profileBtn = document.getElementById('profile-btn');
+        // Profile Modal
         const profileModal = document.getElementById('profile-modal');
-        const closeProfileBtn = document.getElementById('close-profile-btn');
-        
-        profileBtn.onclick = () => {
+        document.getElementById('profile-btn').onclick = () => {
             document.getElementById('profile-unique-id').textContent = API.uniqueId || 'unknown#0000';
             document.getElementById('profile-avatar-display').textContent = (API.username || '?').charAt(0).toUpperCase();
             document.getElementById('profile-username-input').value = API.username;
             document.getElementById('profile-error').textContent = '';
             profileModal.classList.remove('hidden');
         };
-
-        closeProfileBtn.onclick = () => profileModal.classList.add('hidden');
-
-        document.getElementById('save-username-btn').onclick = async () => {
+        document.getElementById('close-profile-btn').onclick = () => profileModal.classList.add('hidden');
+        document.getElementById('cancel-profile-btn').onclick = () => profileModal.classList.add('hidden');
+        
+        const saveBtnHandler = async () => {
             const newName = document.getElementById('profile-username-input').value.trim();
             const errEl = document.getElementById('profile-error');
-            if (!newName) return;
-            if (newName === API.username) {
+            if (!newName || newName === API.username) {
                 profileModal.classList.add('hidden');
                 return;
             }
-            
             try {
                 await API.updateUsername(newName);
                 document.getElementById('profile-avatar-display').textContent = newName.charAt(0).toUpperCase();
                 errEl.style.color = 'var(--accent-cyan)';
-                errEl.textContent = 'Username updated successfully!';
-                
-                // Refresh contacts to update any self-rendered objects
-                setTimeout(() => {
-                    profileModal.classList.add('hidden');
-                }, 1500);
+                errEl.textContent = 'Username updated!';
+                setTimeout(() => profileModal.classList.add('hidden'), 1500);
             } catch (e) {
                 errEl.style.color = 'var(--danger)';
                 errEl.textContent = e.message;
             }
         };
+
+        document.getElementById('save-username-btn').onclick = saveBtnHandler;
+        document.getElementById('save-profile-btn').onclick = saveBtnHandler;
+
+        // Sidebar Tabs
+        document.querySelectorAll('.sidebar-tab').forEach(tab => {
+            tab.onclick = () => {
+                document.querySelectorAll('.sidebar-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                currentTab = tab.dataset.tab;
+                this.renderContacts();
+            };
+        });
 
         // Search
         document.querySelector('.search-input').addEventListener('input', async (e) => {
@@ -449,7 +458,6 @@ const App = {
                     const results = await API.search(query);
                     this.renderSearchResults(results);
                 } catch (err) {
-                    console.error('Search failed:', err);
                     this.renderContacts();
                 }
             } else {
@@ -464,36 +472,114 @@ const App = {
             else this.sendTyping();
         };
 
-        // UI Button Handlers
+        // Media
+        const mediaInput = document.getElementById('media-input');
+        const attachBtn = document.getElementById('attach-btn');
+        if (attachBtn && mediaInput) {
+            attachBtn.onclick = () => mediaInput.click();
+            mediaInput.onchange = async () => {
+                if (!mediaInput.files.length || !currentChat) return;
+                try {
+                    attachBtn.innerHTML = '<i data-lucide="loader-2" class="animate-spin"></i>';
+                    lucide.createIcons({ attrs: { 'data-lucide': 'loader-2' }, nameAttr: 'data-lucide', root: attachBtn });
+                    const { url } = await API.uploadMedia(mediaInput.files[0]);
+                    await this.sendRawMessage(url);
+                    mediaInput.value = '';
+                } catch (err) {
+                    alert('Upload failed: ' + err.message);
+                } finally {
+                    attachBtn.innerHTML = '<i data-lucide="plus"></i>';
+                    lucide.createIcons({ attrs: { 'data-lucide': 'plus' }, nameAttr: 'data-lucide', root: attachBtn });
+                }
+            };
+        }
+
         document.getElementById('video-call-btn').onclick = () => this.startCall('video');
         document.getElementById('voice-call-btn').onclick = () => this.startCall('audio');
+        document.getElementById('screenshare-btn').onclick = () => this.toggleScreenshare();
         document.getElementById('end-call-btn').onclick = () => this.endCall();
+
+        // Responsive Mobile Back Button
+        document.getElementById('back-to-sidebar').onclick = () => {
+            document.getElementById('app').classList.remove('chat-open');
+        };
+
+        // In-call controls: Mic Toggle
+        document.getElementById('toggle-mic').onclick = () => {
+            if (!RTC.localStream) return;
+            const audioTrack = RTC.localStream.getAudioTracks()[0];
+            if (!audioTrack) return;
+            audioTrack.enabled = !audioTrack.enabled;
+            const btn = document.getElementById('toggle-mic');
+            const icon = btn.querySelector('i');
+            if (audioTrack.enabled) {
+                icon.setAttribute('data-lucide', 'mic');
+                btn.style.background = '';
+                btn.style.color = '';
+            } else {
+                icon.setAttribute('data-lucide', 'mic-off');
+                btn.style.background = 'var(--danger)';
+                btn.style.color = 'white';
+            }
+            lucide.createIcons();
+        };
+
+        // In-call controls: Camera Toggle
+        document.getElementById('toggle-video').onclick = () => {
+            if (!RTC.localStream) return;
+            const videoTrack = RTC.localStream.getVideoTracks()[0];
+            if (!videoTrack) return;
+            videoTrack.enabled = !videoTrack.enabled;
+            const btn = document.getElementById('toggle-video');
+            const icon = btn.querySelector('i');
+            if (videoTrack.enabled) {
+                icon.setAttribute('data-lucide', 'video');
+                btn.style.background = '';
+                btn.style.color = '';
+            } else {
+                icon.setAttribute('data-lucide', 'video-off');
+                btn.style.background = 'var(--danger)';
+                btn.style.color = 'white';
+            }
+            lucide.createIcons();
+        };
+
+        // Group Management
+        document.getElementById('manage-group-btn-header').onclick = () => this.showManageGroupModal();
+        document.getElementById('close-manage-group-btn').onclick = () => document.getElementById('manage-group-modal').classList.add('hidden');
+        document.getElementById('add-member-btn').onclick = () => this.addGroupMember();
+        document.getElementById('leave-group-btn').onclick = () => this.leaveGroup();
+        document.getElementById('delete-group-btn').onclick = () => this.deleteGroup();
     },
 
     renderContacts() {
         const list = document.getElementById('contact-list');
         list.innerHTML = '';
-        contacts.forEach(c => {
+        
+        let filtered = contacts;
+        if (currentTab === 'groups') {
+            filtered = contacts.filter(c => c.id.startsWith('group-'));
+        } else if (currentTab === 'people') {
+            filtered = contacts.filter(c => !c.id.startsWith('group-'));
+        }
+
+        filtered.forEach(c => {
             if (c.id === (API.userId || API.username)) return; 
             const item = document.createElement('div');
             item.className = `contact-item ${currentChat && currentChat.id === c.id ? 'active' : ''}`;
             item.onclick = () => this.selectChat(c);
-            
             const isOnline = c.status === 'Online';
-            
             item.innerHTML = `
-                <div class="avatar">
-                    ${c.name[0].toUpperCase()}
-                    <div class="online-indicator ${isOnline ? '' : 'offline'}"></div>
-                </div>
+                <div class="avatar">${c.name[0].toUpperCase()}<div class="online-indicator ${isOnline ? '' : 'offline'}"></div></div>
                 <div class="contact-info">
                     <div class="contact-name">${this.escapeHTML(c.name)}</div>
                     <div class="contact-last-msg">${this.escapeHTML(c.lastMsg || 'Say hi!')}</div>
                 </div>
-                <div class="status-tag ${isOnline ? 'online' : 'offline'}">${c.status}</div>
+                <div class="status-tag ${isOnline ? 'online' : 'offline'}">${this.escapeHTML(c.status || 'Offline')}</div>
             `;
             list.appendChild(item);
         });
+        lucide.createIcons();
     },
 
     renderSearchResults(results) {
@@ -503,14 +589,9 @@ const App = {
             const item = document.createElement('div');
             item.className = 'contact-item';
             item.onclick = () => this.selectChat({ id: user.id, name: user.name, lastMsg: 'Click to start chat' });
-            
             const isOnline = user.status === 'Online';
-
             item.innerHTML = `
-                <div class="avatar">
-                    ${user.name[0].toUpperCase()}
-                    <div class="online-indicator ${isOnline ? '' : 'offline'}"></div>
-                </div>
+                <div class="avatar">${user.name[0].toUpperCase()}<div class="online-indicator ${isOnline ? '' : 'offline'}"></div></div>
                 <div class="contact-info">
                     <div class="contact-name">${this.escapeHTML(user.name)}</div>
                     <div class="contact-last-msg">Click to start chat</div>
@@ -521,62 +602,111 @@ const App = {
         });
     },
 
-    selectChat(contact) {
+    async selectChat(contact) {
         currentChat = contact;
         document.getElementById('no-chat-state').classList.add('hidden');
         document.getElementById('chat-active').classList.remove('hidden');
+        document.getElementById('app').classList.add('chat-open'); // for mobile responsiveness
         document.getElementById('active-chat-name').textContent = contact.name;
         document.getElementById('active-chat-avatar').textContent = contact.name[0];
         
-        const container = document.getElementById('message-container');
-        container.innerHTML = '';
+        // Group Admin Button visibility
+        const manageBtn = document.getElementById('manage-group-btn-header');
+        if (contact.id.startsWith('group-')) {
+            manageBtn.classList.remove('hidden');
+        } else {
+            manageBtn.classList.add('hidden');
+        }
 
-        // Load messages from local session history
+        const container = document.getElementById('message-container');
+        container.innerHTML = `<div style="text-align:center; opacity:0.5; padding:20px; display:flex; align-items:center; justify-content:center; gap:8px;"><i data-lucide="lock" style="width:14px; height:14px;"></i> End-to-End Encrypted</div>`;
+        lucide.createIcons();
+
+        // Always re-fetch history from server (handles refresh case)
+        try {
+            const history = await API.getHistory(contact.id);
+            this.messages[contact.id] = [];
+            for (const m of history) {
+                const text = await this.decryptPayload(m.payload, m.sender_id);
+                this.messages[contact.id].push({ text, senderId: m.sender_id, timestamp: new Date(m.timestamp) });
+            }
+        } catch (err) {
+            console.error('History failed:', err);
+        }
         if (this.messages[contact.id]) {
             this.messages[contact.id].forEach(msg => this.addMessageToUI(msg));
         }
+    },
 
-        // Mark active item in list
-        document.querySelectorAll('.contact-item').forEach(el => el.classList.remove('active'));
+    async decryptPayload(payloadBase64, senderId) {
+        // Groups use Base64-encoded plaintext (not E2EE)
+        const isGroupContext = (currentChat && currentChat.id.startsWith('group-')) || 
+                               (senderId && senderId.startsWith('group-'));
+        if (isGroupContext) {
+            try { return decodeURIComponent(escape(atob(payloadBase64))); } catch (e) { 
+                try { return atob(payloadBase64); } catch(e2) { return "[Message]"; }
+            }
+        }
+
+        // For E2EE: determine the correct peer for ECDH key derivation
+        // If senderId is ourselves, the peer is the chat partner (currentChat.id)
+        // If senderId is someone else, the peer is the sender
+        const selfId = API.userId || API.username;
+        const peerId = (senderId === selfId && currentChat) ? currentChat.id : senderId;
+
+        try {
+            const binaryString = atob(payloadBase64);
+            const data = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) data[i] = binaryString.charCodeAt(i);
+            
+            // Try fetching peer's key if missing
+            if (!Crypto.remoteKeys.has(peerId)) {
+                const pubRaw = await API.getPublicKey(peerId);
+                if (pubRaw) await Crypto.importRemoteKey(peerId, pubRaw);
+            }
+
+            return await Crypto.decrypt(data, peerId);
+        } catch (e) {
+            // Fallback: try plain Base64 decode for unencrypted or legacy messages
+            try {
+                return decodeURIComponent(escape(atob(payloadBase64)));
+            } catch (err) {
+                try { return atob(payloadBase64); } catch(e2) {
+                    return "[Encrypted Message]";
+                }
+            }
+        }
     },
 
     async sendMessage() {
         const input = document.getElementById('message-input');
         const text = input.value.trim();
-        
         if (!text) return;
-        
-        if (!currentChat) {
-            alert('Please select a contact from the sidebar to start chatting.');
-            return;
-        }
+        await this.sendRawMessage(text);
+        input.value = '';
+    },
 
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-            alert('Not connected to server. Please wait or refresh the page.');
-            return;
-        }
-
+    async sendRawMessage(text) {
+        if (!currentChat || !ws || ws.readyState !== WebSocket.OPEN) return;
         try {
-            // Check if we have the recipient's public key
-            if (!Crypto.remoteKeys.has(currentChat.id)) {
-                console.log(`Key missing for ${currentChat.id}, fetching from server...`);
-                const remotePubRaw = await API.getPublicKey(currentChat.id);
-                if (remotePubRaw) {
-                    await Crypto.importRemoteKey(currentChat.id, remotePubRaw);
-                } else {
-                    alert(`${currentChat.name} hasn't set up secure messaging yet. They need to log in at least once.`);
-                    return;
+            let payload;
+            const isGroup = currentChat.id.startsWith('group-');
+
+            if (isGroup) {
+                // Group messages: Base64-encode plaintext (broadcast to room)
+                payload = btoa(unescape(encodeURIComponent(text)));
+            } else {
+                // Direct messages: E2EE
+                if (!Crypto.remoteKeys.has(currentChat.id)) {
+                    const remotePubRaw = await API.getPublicKey(currentChat.id);
+                    if (remotePubRaw) await Crypto.importRemoteKey(currentChat.id, remotePubRaw);
+                    else { console.error('No public key for', currentChat.id); return; }
                 }
+                const encrypted = await Crypto.encrypt(text, currentChat.id);
+                const binaryString = Array.from(encrypted).map(b => String.fromCharCode(b)).join('');
+                payload = btoa(binaryString);
             }
 
-            // E2EE Encrypt
-            const encrypted = await Crypto.encrypt(text, currentChat.id);
-
-            // Robust Base64 encoding for Uint8Array
-            const binaryString = Array.from(encrypted).map(b => String.fromCharCode(b)).join('');
-            const payload = btoa(binaryString);
-
-            // selectChat will clear this, so we add to memory then render
             const senderId = API.userId || API.username;
             if (!this.messages[currentChat.id]) this.messages[currentChat.id] = [];
             const msgObj = { text, senderId, timestamp: new Date() };
@@ -584,23 +714,18 @@ const App = {
 
             ws.send(JSON.stringify({
                 type: 'message',
-                to: currentChat.id,
+                to: isGroup ? undefined : currentChat.id,
+                room_id: isGroup ? currentChat.id : undefined,
                 from: senderId,
-                payload: payload
+                payload
             }));
 
-            this.addMessageToUI(msgObj);
-            input.value = '';
-            
-            // Update sidebar for self-sent message
-            const contact = contacts.find(c => c.id === currentChat.id);
-            if (contact) {
-                contact.lastMsg = `You: ${text}`;
-                this.renderContacts();
+            if (!isGroup) {
+                API.addContact(currentChat.id).catch(console.error);
             }
+            this.addMessageToUI(msgObj);
         } catch (e) {
             console.error('Send failed:', e);
-            alert('Failed to send secure message: ' + e.message);
         }
     },
 
@@ -609,53 +734,139 @@ const App = {
         const isSelf = senderId === (API.userId || API.username);
         const msgDiv = document.createElement('div');
         msgDiv.className = `message ${isSelf ? 'self' : 'received'}`;
-        msgDiv.innerHTML = `
-            <div class="message-bubble">${this.escapeHTML(text)}</div>
-            <div class="message-meta">
-                ${timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                ${isSelf ? '<i data-lucide="check-check" style="width: 14px; height: 14px; color: var(--accent-cyan);"></i>' : ''}
-            </div>
-        `;
+        let contentHtml = this.escapeHTML(text);
+
+        if (text.includes('/attachments/')) {
+            const fileName = text.split('/').pop();
+            const ext = fileName.split('.').pop().toLowerCase();
+            const downloadAttr = `download="${fileName}"`;
+            
+            const downloadBtn = `<a href="${text}" ${downloadAttr} class="download-mini-btn" title="Download"><i data-lucide="download" style="width:14px;"></i></a>`;
+
+            if (['jpg','jpeg','png','gif','webp'].includes(ext)) {
+                contentHtml = `
+                    <div class="media-container">
+                        <img src="${this.escapeHTML(text)}" style="max-width:300px; border-radius:8px; cursor:pointer;" onclick="window.open('${this.escapeHTML(text)}', '_blank')">
+                        ${downloadBtn}
+                    </div>`;
+            } else if (['mp4','webm','ogg'].includes(ext)) {
+                contentHtml = `
+                    <div class="media-container">
+                        <video src="${this.escapeHTML(text)}" controls style="max-width:300px; border-radius:8px;"></video>
+                        ${downloadBtn}
+                    </div>`;
+            } else if (['mp3','wav','m4a','aac'].includes(ext)) {
+                contentHtml = `
+                    <div class="media-container">
+                        <audio src="${this.escapeHTML(text)}" controls style="width:250px;"></audio>
+                        ${downloadBtn}
+                    </div>`;
+            } else {
+                contentHtml = `
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <a href="${this.escapeHTML(text)}" target="_blank" class="attachment-link" style="display:flex; align-items:center; gap:8px; color:var(--accent-cyan); background:rgba(255,255,255,0.05); padding:10px; border-radius:8px; border:1px solid var(--border); flex:1;">
+                            <i data-lucide="file-text"></i><span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:200px;">${this.escapeHTML(fileName)}</span>
+                        </a>
+                        <a href="${text}" ${downloadAttr} class="btn-icon" style="background:var(--bg-surface); padding:8px;"><i data-lucide="download"></i></a>
+                    </div>`;
+            }
+        }
+
+        msgDiv.innerHTML = `<div class="message-bubble">${contentHtml}</div><div class="message-meta">${timestamp.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' })}${isSelf ? ' <i data-lucide="check-check" style="width:14px; color:var(--accent-cyan);"></i>' : ''}</div>`;
         container.appendChild(msgDiv);
-        container.scrollTop = container.scrollHeight;
+        
+        // Use requestAnimationFrame to ensure DOM is rendered before scrolling
+        requestAnimationFrame(() => {
+            container.scrollTop = container.scrollHeight;
+        });
+        
         lucide.createIcons();
     },
 
     async startCall(type) {
+        this.callType = type; // 'audio' or 'video'
         document.getElementById('call-overlay').classList.remove('hidden');
+        
         await RTC.init([{ urls: 'stun:stun.l.google.com:19302' }]);
+        
+        // Use proper callback system instead of direct override
+        RTC.onTrack = (stream, track) => {
+            console.log('Remote track received:', track.kind);
+            this.addStreamToUI('remote', stream);
+        };
+        
+        // Send ICE candidates to remote peer
+        RTC.pc.onicecandidate = (e) => {
+            if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'candidate',
+                    to: currentChat.id,
+                    from: API.userId || API.username,
+                    candidate: e.candidate
+                }));
+            }
+        };
+
         const stream = await RTC.getUserMedia(type === 'video', true);
-
         this.addStreamToUI('local', stream);
-
+        
         const offer = await RTC.createOffer();
         const isGroup = currentChat && currentChat.id.startsWith('group-');
-        
         ws.send(JSON.stringify({
             type: isGroup ? 'sfu_offer' : 'offer',
             to: isGroup ? undefined : currentChat.id,
             room_id: isGroup ? currentChat.id : undefined,
-            from: API.uniqueId || API.username,
-            sdp: offer.sdp
+            from: API.userId || API.username,
+            sdp: offer.sdp,
+            call_type: type 
         }));
+        
+        lucide.createIcons();
     },
 
     async onReceiveCallOffer(msg) {
-        const accept = confirm(`Incoming ${msg.type} call from ${msg.from}. Accept?`);
-        if (!accept) return;
-
+        const callType = msg.call_type || 'video';
+        const callerName = msg.from.replace(/^u-/, '');
+        const callLabel = callType === 'audio' ? '📞 Audio' : '📹 Video';
+        
+        if (!confirm(`${callLabel} call from ${callerName}. Accept?`)) return;
+        
+        this.callType = callType;
         document.getElementById('call-overlay').classList.remove('hidden');
+        
         await RTC.init([{ urls: 'stun:stun.l.google.com:19302' }]);
-        const stream = await RTC.getUserMedia(true, true);
-        this.addStreamToUI('local', stream);
+        
+        // Remote track handler
+        RTC.onTrack = (stream, track) => {
+            console.log('Remote track received:', track.kind);
+            this.addStreamToUI('remote', stream);
+        };
+        
+        // Send ICE candidates
+        RTC.pc.onicecandidate = (e) => {
+            if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'candidate',
+                    to: msg.from,
+                    from: API.userId || API.username,
+                    candidate: e.candidate
+                }));
+            }
+        };
 
+        const useVideo = callType === 'video';
+        const stream = await RTC.getUserMedia(useVideo, true);
+        this.addStreamToUI('local', stream);
+        
         const answer = await RTC.handleOffer(msg.sdp);
         ws.send(JSON.stringify({
             type: 'answer',
             to: msg.from,
-            from: API.username,
+            from: API.userId || API.username,
             sdp: answer.sdp
         }));
+        
+        lucide.createIcons();
     },
 
     addStreamToUI(id, stream) {
@@ -663,6 +874,28 @@ const App = {
         if (!video) {
             const container = document.createElement('div');
             container.className = 'video-container';
+            
+            // For audio-only calls, show an avatar placeholder
+            if (this.callType === 'audio') {
+                container.style.cssText = 'display:flex; align-items:center; justify-content:center; min-height:200px;';
+                const label = id === 'local' ? 'You' : (currentChat ? currentChat.name : 'Peer');
+                container.innerHTML = `
+                    <div style="text-align:center; position: relative; z-index: 5;">
+                        <div style="width:80px; height:80px; border-radius:50%; background:linear-gradient(135deg, var(--accent-blue), var(--accent-cyan)); display:flex; align-items:center; justify-content:center; font-size:32px; margin:0 auto 12px; color:white;">${label[0].toUpperCase()}</div>
+                        <div style="color:white; font-size:14px; font-weight: 500;">${this.escapeHTML(label)}</div>
+                        <div style="color:var(--text-secondary); font-size:12px; margin-top:4px;">Audio Call</div>
+                    </div>
+                `;
+                const audio = document.createElement('audio');
+                audio.id = `video-${id}`;
+                audio.autoplay = true;
+                if (id === 'local') audio.muted = true;
+                audio.srcObject = stream;
+                container.appendChild(audio);
+                document.getElementById('video-grid').appendChild(container);
+                return;
+            }
+            
             video = document.createElement('video');
             video.id = `video-${id}`;
             video.autoplay = true;
@@ -672,18 +905,224 @@ const App = {
             document.getElementById('video-grid').appendChild(container);
         }
         video.srcObject = stream;
+        lucide.createIcons();
     },
 
-    endCall() {
+
+    async toggleScreenshare() {
+        const btn = document.getElementById('screenshare-btn');
+        if (RTC.screenStream) {
+            RTC.stopScreenShare();
+            btn.classList.remove('active');
+            btn.querySelector('i').setAttribute('data-lucide', 'monitor-up');
+        } else {
+            try {
+                await RTC.startScreenShare();
+                btn.classList.add('active');
+                btn.querySelector('i').setAttribute('data-lucide', 'monitor-stop');
+            } catch (e) {
+                console.warn('Screen share failed/cancelled:', e);
+            }
+        }
+        lucide.createIcons();
+    },
+
+    async showManageGroupModal() {
+        if (!currentChat) return;
+        const modal = document.getElementById('manage-group-modal');
+        document.getElementById('manage-group-title').textContent = `Manage ${currentChat.name}`;
+        document.getElementById('manage-group-error').textContent = '';
+        modal.classList.remove('hidden');
+        
+        const members = await this.renderGroupMembers();
+        
+        // Show/hide delete button based on admin status
+        const isAdmin = members && members.some(m => m.user_id === API.userId && m.role === 'admin');
+        const deleteBtn = document.getElementById('delete-group-btn');
+        if (isAdmin) {
+            deleteBtn.classList.remove('hidden');
+        } else {
+            deleteBtn.classList.add('hidden');
+        }
+
+        // Update Add Member select list
+        const select = document.getElementById('add-member-select');
+        select.innerHTML = '<option value="">Select a contact...</option>';
+        contacts.forEach(c => {
+            if (!c.id.startsWith('group-')) {
+                select.innerHTML += `<option value="${c.id}">${this.escapeHTML(c.name)}</option>`;
+            }
+        });
+        
+        lucide.createIcons();
+    },
+
+    async renderGroupMembers() {
+        const container = document.getElementById('group-members-list');
+        const adminControls = document.getElementById('admin-controls');
+        container.innerHTML = '<div style="text-align:center; opacity:0.5;">Loading...</div>';
+        
+        try {
+            const members = await API.getGroupMembers(currentChat.id);
+            container.innerHTML = '';
+            
+            const isAdmin = members.some(m => m.user_id === API.userId && m.role === 'admin');
+            if (isAdmin) {
+                adminControls.classList.remove('hidden');
+            } else {
+                adminControls.classList.add('hidden');
+            }
+
+            members.forEach(m => {
+                const item = document.createElement('div');
+                item.style.cssText = "display:flex; justify-content:space-between; align-items:center; background:var(--bg-surface); padding:10px; border-radius:8px;";
+                const isYou = m.user_id === API.userId;
+                
+                item.innerHTML = `
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <div class="avatar-mini" style="width:30px; height:30px; border-radius:50%; background:rgba(255,255,255,0.05); display:flex; align-items:center; justify-content:center; font-size:12px;">${m.username[0].toUpperCase()}</div>
+                        <div>
+                            <div style="font-size:14px;">${this.escapeHTML(m.username)} ${isYou ? '<span style="opacity:0.5;">(You)</span>' : ''}</div>
+                            <div style="font-size:11px; opacity:0.5; color:var(--accent-cyan);">${m.role.toUpperCase()}</div>
+                        </div>
+                    </div>
+                    ${isAdmin && !isYou ? `<button class="btn-icon" style="color:var(--danger);" onclick="App.removeGroupMember('${m.user_id}')"><i data-lucide="user-minus"></i></button>` : ''}
+                `;
+                container.appendChild(item);
+            });
+            lucide.createIcons();
+            return members; // Return for caller to check admin status
+        } catch (e) {
+            container.innerHTML = `<div style="color:var(--danger);">Error: ${e.message}</div>`;
+            return [];
+        }
+    },
+
+    async addGroupMember() {
+        const select = document.getElementById('add-member-select');
+        const userId = select.value;
+        const errEl = document.getElementById('manage-group-error');
+        if (!userId) return;
+        
+        try {
+            await API.addGroupMember(currentChat.id, userId);
+            await this.renderGroupMembers();
+            select.value = '';
+        } catch (e) {
+            errEl.textContent = e.message;
+        }
+    },
+
+    async removeGroupMember(userId) {
+        if (!confirm('Remove this member?')) return;
+        try {
+            await API.removeGroupMember(currentChat.id, userId);
+            await this.renderGroupMembers();
+        } catch (e) {
+            alert('Failed: ' + e.message);
+        }
+    },
+
+    async leaveGroup() {
+        if (!currentChat) return;
+        if (!confirm(`Are you sure you want to leave "${currentChat.name}"?`)) return;
+        
+        const errEl = document.getElementById('manage-group-error');
+        try {
+            await API.leaveGroup(currentChat.id);
+            // Close modal and remove group from sidebar
+            document.getElementById('manage-group-modal').classList.add('hidden');
+            contacts = contacts.filter(c => c.id !== currentChat.id);
+            currentChat = null;
+            document.getElementById('chat-active').classList.add('hidden');
+            document.getElementById('no-chat-state').classList.remove('hidden');
+            this.renderContacts();
+        } catch (e) {
+            errEl.textContent = e.message;
+        }
+    },
+
+    async deleteGroup() {
+        if (!currentChat) return;
+        if (!confirm(`Permanently delete "${currentChat.name}" and remove all members? This cannot be undone.`)) return;
+        
+        const errEl = document.getElementById('manage-group-error');
+        try {
+            await API.deleteGroup(currentChat.id);
+            // Close modal and remove group from sidebar
+            document.getElementById('manage-group-modal').classList.add('hidden');
+            contacts = contacts.filter(c => c.id !== currentChat.id);
+            currentChat = null;
+            document.getElementById('chat-active').classList.add('hidden');
+            document.getElementById('no-chat-state').classList.remove('hidden');
+            this.renderContacts();
+        } catch (e) {
+            errEl.textContent = e.message;
+        }
+    },
+
+      endCall(notifyPeer = true) {
+        // Send hangup signal to remote peer if needed
+        if (notifyPeer && ws && ws.readyState === WebSocket.OPEN && currentChat) {
+            ws.send(JSON.stringify({
+                type: 'hangup',
+                to: currentChat.id,
+                from: API.userId || API.username
+            }));
+        }
+
+        // Stop screen share first (before closing PC)
+        if (RTC.screenStream) {
+            RTC.screenStream.getTracks().forEach(t => t.stop());
+            RTC.screenStream = null;
+        }
         RTC.close();
+        
+        // Reset call controls - setting innerHTML is safer than modifying existing icon elements
+        // which Lucide may have already replaced with SVG
+        const screenshareBtn = document.getElementById('screenshare-btn');
+        if (screenshareBtn) {
+            screenshareBtn.classList.remove('active');
+            screenshareBtn.innerHTML = '<i data-lucide="monitor-up"></i>';
+        }
+
+        const micBtn = document.getElementById('toggle-mic');
+        if (micBtn) {
+            micBtn.classList.remove('muted');
+            micBtn.innerHTML = '<i data-lucide="mic"></i>';
+            micBtn.style.background = '';
+            micBtn.style.color = '';
+        }
+
+        const vidBtn = document.getElementById('toggle-video');
+        if (vidBtn) {
+            vidBtn.classList.remove('muted');
+            vidBtn.innerHTML = '<i data-lucide="video"></i>';
+            vidBtn.style.background = '';
+            vidBtn.style.color = '';
+        }
+
         document.getElementById('call-overlay').classList.add('hidden');
         document.getElementById('video-grid').innerHTML = '';
+        lucide.createIcons();
     },
 
-    sendTyping() {
-        if (!currentChat || !ws) return;
-        ws.send(JSON.stringify({ type: 'typing', to: currentChat.id, from: API.userId || API.username }));
+    confirmDeleteAccount() { document.getElementById('confirm-modal').classList.remove('hidden'); },
+
+    async executeDeleteAccount() {
+        const btn = document.getElementById('confirm-execute');
+        btn.disabled = true; btn.textContent = 'Deleting...';
+        try {
+            await API.deleteAccount();
+            alert('Account deleted.');
+            API.logout();
+        } catch (err) {
+            alert('Failed: ' + err.message);
+            btn.disabled = false; btn.textContent = 'Delete Forever';
+        }
     },
+
+    sendTyping() { if (currentChat && ws) ws.send(JSON.stringify({ type: 'typing', to: currentChat.id, from: API.userId || API.username })); },
 
     showTyping(userId) {
         const el = document.getElementById('typing-indicator');
@@ -692,11 +1131,7 @@ const App = {
         el.timer = setTimeout(() => el.textContent = '', 3000);
     },
 
-    escapeHTML(str) {
-        const p = document.createElement('p');
-        p.textContent = str;
-        return p.innerHTML;
-    }
+    escapeHTML(str) { const p = document.createElement('p'); p.textContent = str; return p.innerHTML; }
 };
 
 window.onload = () => App.init();

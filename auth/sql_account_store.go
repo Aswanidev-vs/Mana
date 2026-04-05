@@ -165,6 +165,16 @@ func (s *SQLAccountStore) GetUser(ctx context.Context, userID string) (core.User
 	return user, nil
 }
 
+func (s *SQLAccountStore) DeleteUser(ctx context.Context, userID string) error {
+	query := fmt.Sprintf("DELETE FROM %saccounts WHERE user_id = ?", s.prefix)
+	if s.backend.Driver == db.Postgres {
+		query = fmt.Sprintf("DELETE FROM %saccounts WHERE user_id = $1", s.prefix)
+	}
+
+	_, err := s.conn(ctx).ExecContext(ctx, query, userID)
+	return err
+}
+
 func (s *SQLAccountStore) conn(ctx context.Context) interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)

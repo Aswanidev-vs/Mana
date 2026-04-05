@@ -68,6 +68,14 @@ body {
   display: flex;
   flex-direction: column;
   position: relative;
+  min-height: 0; /* Important for nested flex scrolling */
+}
+
+#chat-active {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0; /* Important for nested flex scrolling */
 }
 
 /* ━━ SIDEBAR COMPONENTS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
@@ -106,6 +114,42 @@ body {
 .search-input:focus {
   border-color: var(--accent-cyan);
   box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.2);
+}
+
+.sidebar-tabs {
+  display: flex;
+  padding: 0 16px 12px;
+  gap: 8px;
+}
+
+.sidebar-tab {
+  flex: 1;
+  padding: 8px 4px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: var(--transition);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.sidebar-tab:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.sidebar-tab.active {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
 }
 
 .contact-list {
@@ -219,6 +263,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-height: 0; /* Force scroll instead of expansion */
 }
 
 .message {
@@ -265,12 +310,13 @@ body {
 
 /* ━━ INPUT BAR ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 .input-bar {
-  padding: 20px 24px;
+  padding: 16px 24px;
   display: flex;
-  gap: 12px;
   align-items: center;
-  background: var(--bg-secondary);
+  gap: 16px;
   border-top: 1px solid var(--border-color);
+  flex-shrink: 0;
+  z-index: 10;
 }
 
 .message-input {
@@ -369,10 +415,10 @@ body {
 
 /* ━━ CALL INTERFACE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 .call-overlay {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  background: #000;
-  z-index: 50;
+  background: rgba(0, 0, 0, 0.95);
+  z-index: 500;
   display: flex;
   flex-direction: column;
 }
@@ -380,9 +426,10 @@ body {
 .video-grid {
   flex: 1;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 16px;
   padding: 24px;
+  align-content: center;
 }
 
 .video-container {
@@ -390,6 +437,7 @@ body {
   border-radius: var(--radius-md);
   overflow: hidden;
   position: relative;
+  min-height: 200px;
 }
 
 .video-container video {
@@ -399,29 +447,56 @@ body {
 }
 
 .call-controls {
-  padding: 24px;
+  position: absolute;
+  bottom: 30px;
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
   justify-content: center;
-  gap: 20px;
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(10px);
+  align-items: center;
+  gap: 16px;
+  padding: 12px 24px;
+  background: rgba(20, 20, 30, 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 40px;
+  z-index: 1000;
+  pointer-events: auto;
 }
 
 .btn-call-action {
-  width: 60px;
-  height: 60px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
   cursor: pointer;
   border: none;
+  color: white;
+  background: rgba(255, 255, 255, 0.1);
+  transition: all 0.2s ease;
+}
+
+.btn-call-action:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(1.08);
+}
+
+.btn-call-action.muted {
+  background: var(--danger);
+  color: white;
 }
 
 .btn-end-call {
-  background: var(--danger);
+  background: var(--danger) !important;
   color: white;
+}
+
+.btn-end-call:hover {
+  background: #dc2626 !important;
+  transform: scale(1.1);
 }
 
 /* ━━ LOGIN TABS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
@@ -470,3 +545,125 @@ body {
 .hidden { display: none !important; }
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+
+/* ━━ MEDIA ENHANCEMENTS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.media-container {
+  position: relative;
+  display: inline-block;
+  max-width: 300px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.media-container video, .media-container img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.download-mini-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  text-decoration: none;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: all 0.2s ease;
+  z-index: 5;
+}
+
+.media-container:hover .download-mini-btn {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.download-mini-btn:hover {
+  background: var(--accent-cyan);
+  transform: scale(1.1) !important;
+}
+
+.attachment-link:hover {
+  filter: brightness(1.2);
+  border-color: var(--accent-cyan) !important;
+}
+
+/* ━━ RESPONSIVE DESIGN ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.mobile-only { display: none !important; }
+
+@media (max-width: 768px) {
+  .mobile-only { display: flex !important; }
+
+  #app {
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  #sidebar {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    z-index: 200;
+    transition: transform 0.3s ease;
+  }
+
+  #main-chat {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    z-index: 100;
+  }
+
+  /* When a chat is active on mobile, hide the sidebar */
+  #app.chat-open #sidebar {
+    transform: translateX(-100%);
+  }
+
+  .video-grid {
+    grid-template-columns: 1fr;
+    padding: 16px;
+    gap: 12px;
+  }
+
+  .call-controls {
+    width: 90%;
+    bottom: 20px;
+    gap: 12px;
+    padding: 10px 16px;
+  }
+
+  .btn-call-action {
+    width: 48px;
+    height: 48px;
+  }
+
+  .modal-content {
+    width: 95%;
+    margin: 10px;
+    padding: 24px;
+  }
+
+  .chat-header {
+    padding: 12px 16px;
+  }
+
+  .input-bar {
+    padding: 12px 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .logo-text { font-size: 24px; }
+  .btn-primary { padding: 12px; }
+  .contact-item { padding: 12px; }
+  .avatar { width: 44px; height: 44px; }
+}

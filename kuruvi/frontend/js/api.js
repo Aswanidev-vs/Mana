@@ -139,8 +139,12 @@ const API = {
         const res = await fetch(`${this.baseUrl}/contacts`, {
             headers: { 'Authorization': `Bearer ${this.token}` }
         });
-        if (!res.ok) return [];
-        return await res.json();
+        if (!res.ok) {
+            console.warn('getContacts failed:', res.status, res.statusText);
+            return [];
+        }
+        const data = await res.json();
+        return Array.isArray(data) ? data : [];
     },
 
     async uploadPublicKey(userId, pubKey) {
@@ -168,12 +172,98 @@ const API = {
         return await res.json();
     },
 
+    async getGroupMembers(roomId) {
+        const res = await fetch(`${this.baseUrl}/group/members?room_id=${roomId}`, {
+            headers: { 'Authorization': `Bearer ${this.token}` }
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return await res.json();
+    },
+
+    async addGroupMember(roomId, userId) {
+        const res = await fetch(`${this.baseUrl}/group/members?room_id=${roomId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${this.token}`
+            },
+            body: JSON.stringify({ user_id: userId })
+        });
+        if (!res.ok) throw new Error(await res.text());
+    },
+
+    async removeGroupMember(roomId, userId) {
+        const res = await fetch(`${this.baseUrl}/group/members?room_id=${roomId}&user_id=${userId}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${this.token}` }
+        });
+        if (!res.ok) throw new Error(await res.text());
+    },
+
     async search(query) {
         const res = await fetch(`${this.baseUrl}/search?q=${encodeURIComponent(query)}`, {
             headers: { 'Authorization': `Bearer ${this.token}` }
         });
         if (!res.ok) return [];
         return await res.json();
+    },
+
+    async deleteGroup(roomId) {
+        const res = await fetch(`${this.baseUrl}/group/delete?room_id=${roomId}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${this.token}` }
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return await res.json();
+    },
+
+    async leaveGroup(roomId) {
+        const res = await fetch(`${this.baseUrl}/group/leave?room_id=${roomId}`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${this.token}` }
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return await res.json();
+    },
+
+    async getHistory(contactId) {
+        const res = await fetch(`${this.baseUrl}/messages/history?contact_id=${encodeURIComponent(contactId)}`, {
+            headers: { 'Authorization': `Bearer ${this.token}` }
+        });
+        if (!res.ok) return [];
+        return await res.json();
+    },
+
+    async addContact(contactId) {
+        const res = await fetch(`${this.baseUrl}/contacts/add`, {
+            method: 'POST',
+            headers: { 
+                'Authorization': `Bearer ${this.token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ contact_id: contactId })
+        });
+        if (!res.ok) throw new Error(await res.text());
+    },
+
+    async uploadMedia(file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await fetch(`${this.baseUrl}/upload`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${this.token}` },
+            body: formData
+        });
+        if (!res.ok) throw new Error('Upload failed');
+        return res.json();
+    },
+
+    async deleteAccount() {
+        const res = await fetch(`${this.baseUrl}/auth/delete`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${this.token}` }
+        });
+        if (!res.ok) throw new Error('Account deletion failed');
+        return res.json();
     }
 };
-

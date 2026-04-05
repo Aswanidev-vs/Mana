@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -246,6 +247,37 @@ func (s *SQLMessageStore) LatestSequenceForUser(ctx context.Context, userID stri
 		return 0
 	}
 	return latest
+}
+
+func (s *SQLMessageStore) GetConversation(ctx context.Context, userID, contactID string, limit int) ([]core.Message, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	query := fmt.Sprintf(`SELECT id, room_id, sender_id, target_id, type, payload, sequence, timestamp
+		FROM %smessages
+		WHERE (sender_id = ? AND target_id = ?) OR (sender_id = ? AND target_id = ?)
+		ORDER BY timestamp DESC
+		LIMIT ?`, s.prefix)
+
+	if s.backend.Driver == db.Postgres {
+		query = fmt.Sprintf(`SELECT id, room_id, sender_id, target_id, type, payload, sequence, timestamp
+			FROM %smessages
+			WHERE (sender_id = $1 AND target_id = $2) OR (sender_id = $2 AND target_id = $1)
+			ORDER BY timestamp DESC
+			LIMIT $3`, s.prefix)
+	}
+
+	rows, err := s.conn(ctx).QueryContext(ctx, query, userID, contactID, contactID, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	messages := s.scanMessages(rows)
+	// reverse to chronological order
+	slices.Reverse(messages)
+	return messages, nil
 }
 
 func (s *SQLMessageStore) SyncForUserSince(ctx context.Context, userID string, since time.Time) []core.Message {
