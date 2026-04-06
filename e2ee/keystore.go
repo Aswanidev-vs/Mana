@@ -1,8 +1,10 @@
 package e2ee
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -84,16 +86,20 @@ func (s *SQLKeyStore) LoadIdentityPublicKey(ctx context.Context, userID string) 
 
 func (s *SQLKeyStore) SavePreKeyBundle(ctx context.Context, userID string, bundle *PublicPreKeyBundle) error {
 	bundle.MarshalKeys()
-	data, err := json.Marshal(bundle)
+	jsonData, err := json.Marshal(bundle)
 	if err != nil {
 		return fmt.Errorf("marshal prekey bundle: %w", err)
 	}
+
+	// Layer Base64 and Versioning to prevent driver-level character corruption
+	b64Data := base64.StdEncoding.EncodeToString(jsonData)
+	versionedData := []byte("v1:" + b64Data)
 
 	query := fmt.Sprintf("INSERT INTO %se2ee_prekeys (user_id, bundle) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET bundle=excluded.bundle", s.prefix)
 	if s.backend.Driver == db.Postgres {
 		query = fmt.Sprintf("INSERT INTO %se2ee_prekeys (user_id, bundle) VALUES ($1, $2) ON CONFLICT(user_id) DO UPDATE SET bundle=EXCLUDED.bundle", s.prefix)
 	}
-	_, err = s.conn(ctx).ExecContext(ctx, query, userID, data)
+	_, err = s.conn(ctx).ExecContext(ctx, query, userID, versionedData)
 	return err
 }
 
@@ -111,9 +117,28 @@ func (s *SQLKeyStore) LoadPreKeyBundle(ctx context.Context, userID string) (*Pub
 		return nil, err
 	}
 
+	var jsonData []byte
+	versionPrefix := []byte("v1:")
+
+	// Detect storage version using zero-copy prefix check
+	if bytes.HasPrefix(data, versionPrefix) {
+		// Version 1: Base64 Encoded JSON
+		b64Content := data[len(versionPrefix):]
+		decoded, err := base64.StdEncoding.DecodeString(string(b64Content))
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode v1 prekey bundle: %w", err)
+		}
+		jsonData = decoded
+	} else if len(data) > 0 && data[0] == '{' {
+		// Legacy: Raw JSON
+		jsonData = data
+	} else {
+		return nil, fmt.Errorf("unknown prekey bundle format for user %s", userID)
+	}
+
 	var bundle PublicPreKeyBundle
-	if err := json.Unmarshal(data, &bundle); err != nil {
-		return nil, fmt.Errorf("unmarshal prekey bundle: %w", err)
+	if err := json.Unmarshal(jsonData, &bundle); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal bundle from %s: %w", userID, err)
 	}
 	if err := bundle.UnmarshalKeys(); err != nil {
 		return nil, fmt.Errorf("unmarshal prekey bundle keys: %w", err)
@@ -122,31 +147,33 @@ func (s *SQLKeyStore) LoadPreKeyBundle(ctx context.Context, userID string) (*Pub
 }
 
 func (s *SQLKeyStore) ConsumeOneTimePreKey(ctx context.Context, userID string) error {
-	// Load the bundle, clear one OPK, and save it back
-	bundle, err := s.LoadPreKeyBundle(ctx, userID)
-	if err != nil || bundle == nil {
-		return err
-	}
-	if len(bundle.OneTimePreKeys) == 0 {
-		return nil // No OPKs to consume
-	}
-
-	// Pop the first key (smallest ID)
-	var firstID uint32
-	var found bool
-	for id := range bundle.OneTimePreKeys {
-		if !found || id < firstID {
-			firstID = id
-			found = true
+	return s.backend.RunInTx(ctx, func(ctx context.Context) error {
+		// Load the bundle, clear one OPK, and save it back
+		bundle, err := s.LoadPreKeyBundle(ctx, userID)
+		if err != nil || bundle == nil {
+			return err
 		}
-	}
+		if len(bundle.OneTimePreKeys) == 0 {
+			return nil // No OPKs to consume
+		}
 
-	if found {
-		delete(bundle.OneTimePreKeys, firstID)
-		delete(bundle.OneTimePreKeysBytes, firstID)
-	}
+		// Pop the first key (smallest ID)
+		var firstID uint32
+		var found bool
+		for id := range bundle.OneTimePreKeys {
+			if !found || id < firstID {
+				firstID = id
+				found = true
+			}
+		}
 
-	return s.SavePreKeyBundle(ctx, userID, bundle)
+		if found {
+			delete(bundle.OneTimePreKeys, firstID)
+			delete(bundle.OneTimePreKeysBytes, firstID)
+		}
+
+		return s.SavePreKeyBundle(ctx, userID, bundle)
+	})
 }
 
 // --- Session State ---

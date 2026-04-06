@@ -119,3 +119,30 @@ func GetTx(ctx context.Context) *sql.Tx {
 	}
 	return nil
 }
+// RunInTx executes a function within a transaction.
+// If the context already contains a transaction, it uses that one.
+// Otherwise, it starts a new transaction and commits/rolls back as needed.
+func (b *Backend) RunInTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	if tx := GetTx(ctx); tx != nil {
+		return fn(ctx)
+	}
+
+	tx, err := b.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if p := recover(); p != nil {
+			tx.Rollback()
+			panic(p)
+		}
+	}()
+
+	if err := fn(WithTx(ctx, tx)); err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	return tx.Commit()
+}

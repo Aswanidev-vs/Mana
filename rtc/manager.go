@@ -320,6 +320,24 @@ type Manager struct {
 	conf webrtc.Configuration
 }
 
+// Close closes the manager and all its tracked peer connections.
+func (m *Manager) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for id, peer := range m.peers {
+		_ = peer.Close()
+		delete(m.peers, id)
+	}
+
+	// Routers can be cleaned up here too if they hold background resources
+	for id := range m.routers {
+		delete(m.routers, id)
+	}
+
+	return nil
+}
+
 // NewManager creates a new RTC Manager with configurable STUN servers.
 func NewManager(stunServers []string) *Manager {
 	return NewManagerWithICEServers(stunServers, nil, "all")

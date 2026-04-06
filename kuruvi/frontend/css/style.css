@@ -18,6 +18,31 @@
   --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+.status-badge {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.status-badge.online {
+  background-color: var(--success);
+  box-shadow: 0 0 8px var(--success);
+}
+.status-badge.offline {
+  background-color: var(--danger);
+  box-shadow: 0 0 8px var(--danger);
+}
+.status-badge.connecting {
+  background-color: var(--accent-cyan);
+  box-shadow: 0 0 8px var(--accent-cyan);
+  animation: pulse 1s infinite alternate;
+}
+
+@keyframes pulse {
+  from { opacity: 0.5; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1.1); }
+}
+
 * {
   box-sizing: border-box;
   margin: 0;

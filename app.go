@@ -249,6 +249,7 @@ func New(cfg core.Config) *App {
 		OnConnect:      app.onWSConnect,
 		OnDisconnect:   app.onWSDisconnect,
 		OnMessage:      app.onWSMessage,
+		Logger:         app.logger,
 	})
 
 	// Product store initialization
@@ -310,7 +311,11 @@ func (a *App) WithDatabase(dbConn *sql.DB, driver string) *App {
 func (a *App) initializeDefaultStores(backend *db.Backend) {
 	prefix := a.config.DatabaseTablePrefix
 	if a.store == nil {
-		a.store, _ = storage.NewSQLMessageStoreWithPrefix(backend, prefix)
+		var err error
+		a.store, err = storage.NewSQLMessageStoreWithPrefix(backend, prefix)
+		if err != nil {
+			a.logger.Error("Failed to initialize SQL Message Store: %v", err)
+		}
 	}
 	if a.account == nil {
 		var err error
@@ -323,14 +328,23 @@ func (a *App) initializeDefaultStores(backend *db.Backend) {
 		socialStore, err := social.NewSQLSocialStoreWithPrefix(backend, prefix)
 		if err != nil {
 			a.logger.Error("Failed to initialize SQL Social Store: %v", err)
+		} else {
+			a.profile = socialStore
+			a.contact = socialStore
 		}
-		a.profile = socialStore
-		a.contact = socialStore
 		// Default implementations for others if not provided
-		a.prefs, _ = settings.NewSQLPreferenceStoreWithPrefix(backend, prefix)
+		var errPref error
+		a.prefs, errPref = settings.NewSQLPreferenceStoreWithPrefix(backend, prefix)
+		if errPref != nil {
+			a.logger.Error("Failed to initialize SQL Preference Store: %v", errPref)
+		}
 	}
 	if a.rooms == nil {
-		a.rooms, _ = storage.NewSQLRoomStoreWithPrefix(backend, prefix)
+		var err error
+		a.rooms, err = storage.NewSQLRoomStoreWithPrefix(backend, prefix)
+		if err != nil {
+			a.logger.Error("Failed to initialize SQL Room Store: %v", err)
+		}
 	}
 }
 
@@ -422,6 +436,18 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.mu.RUnlock()
 
 	// E2EE cleanup is handled by the KeyStore (persistent storage)
+
+	if a.rtcManager != nil {
+		if err := a.rtcManager.Close(); err != nil {
+			a.logger.Error("failed to close RTC manager during shutdown: %v", err)
+		}
+	}
+
+	if a.backend != nil {
+		if err := a.backend.Close(); err != nil {
+			a.logger.Error("failed to close database backend during shutdown: %v", err)
+		}
+	}
 
 	if a.server != nil {
 		err := a.server.Shutdown(ctx)
@@ -657,6 +683,11 @@ func (a *App) replayOfflineSync(session *room.UserSession, requestedCursor uint6
 
 // --- RTC signaling (extracted from app.go) ---
 
+const (
+	defaultSignalTimeout = 10 * time.Second
+	longSignalTimeout    = 30 * time.Second
+)
+
 func (a *App) setupRTCSignaling() {
 	a.callManager.OnCallEvent(func(event core.CallEvent) {
 		switch event.Status {
@@ -672,44 +703,60 @@ func (a *App) setupRTCSignaling() {
 	})
 
 	a.rtcManager.SetOnTrack(func(peerID, roomID, trackID string) {
-		ctx := context.Background()
-		a.signalHub.BroadcastToRoom(ctx, roomID, peerID, core.Signal{
+		ctx, cancel := context.WithTimeout(context.Background(), defaultSignalTimeout)
+		defer cancel()
+		if err := a.signalHub.BroadcastToRoom(ctx, roomID, peerID, core.Signal{
 			Type: "track_added", From: peerID, RoomID: roomID, Payload: []byte(trackID),
-		})
+		}); err != nil {
+			a.logger.Error("SFU: Failed to broadcast track_added signal: %v", err)
+		}
 	})
 	a.rtcManager.SetOnRecoveryNeeded(func(peerID, roomID, reason string) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), defaultSignalTimeout)
 		defer cancel()
 		offer, err := a.rtcManager.RestartICE(peerID)
 		if err != nil {
+			a.logger.Error("SFU: Failed to restart ICE for %s: %v", peerID, err)
 			return
 		}
-		_ = a.signalHub.Send(ctx, core.Signal{
+		if err := a.signalHub.Send(ctx, core.Signal{
 			Type:    core.SignalOffer,
 			From:    "SFU",
 			To:      peerID,
 			RoomID:  roomID,
 			SDP:     offer.SDP,
 			Payload: []byte(reason),
-		})
+		}); err != nil {
+			a.logger.Error("SFU: Failed to send ICE restart offer to %s: %v", peerID, err)
+		}
 	})
 
 	a.signalHub.On(core.SignalOffer, func(sig core.Signal) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), longSignalTimeout)
 		defer cancel()
 		var sdp webrtc.SessionDescription
 		if err := json.Unmarshal([]byte(sig.SDP), &sdp); err != nil {
+			a.logger.Error("SFU: Failed to unmarshal offer from %s: %v", sig.From, err)
 			return
 		}
 		answer, err := a.rtcManager.HandleOffer(ctx, sig.From, sig.From, sig.RoomID, sdp)
 		if err != nil {
+			a.logger.Error("SFU: Failed to handle offer from %s: %v", sig.From, err)
 			return
 		}
-		a.signalHub.Send(ctx, core.Signal{Type: core.SignalAnswer, From: "SFU", To: sig.From, RoomID: sig.RoomID, SDP: answer.SDP})
+		if err := a.signalHub.Send(ctx, core.Signal{
+			Type:   core.SignalAnswer,
+			From:   "SFU",
+			To:     sig.From,
+			RoomID: sig.RoomID,
+			SDP:    answer.SDP,
+		}); err != nil {
+			a.logger.Error("SFU: Failed to send answer to %s: %v", sig.From, err)
+		}
 	})
 
 	a.signalHub.On(core.SignalSFUOffer, func(sig core.Signal) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), defaultSignalTimeout)
 		defer cancel()
 		
 		userID, _ := splitSessionID(sig.From)
@@ -721,13 +768,15 @@ func (a *App) setupRTCSignaling() {
 			return
 		}
 		
-		_ = a.signalHub.Send(ctx, core.Signal{
+		if err := a.signalHub.Send(ctx, core.Signal{
 			Type:   core.SignalSFUAnswer,
 			From:   "SYSTEM",
 			To:     sig.From,
 			RoomID: sig.RoomID,
 			SDP:    answer.SDP,
-		})
+		}); err != nil {
+			a.logger.Error("SFU: Failed to send SFU answer to %s: %v", sig.From, err)
+		}
 	})
 
 	a.signalHub.On(core.SignalSFUAnswer, func(sig core.Signal) {
@@ -766,17 +815,21 @@ func (a *App) setupRTCSignaling() {
 		}
 		
 		// Subscribing creates a new track which requires an SDP renegotiation. Let's restart ICE/offer process.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), defaultSignalTimeout)
 		defer cancel()
 		offer, err := a.rtcManager.RestartICE(sig.From)
-		if err == nil {
-			_ = a.signalHub.Send(ctx, core.Signal{
-				Type:   core.SignalSFUOffer,
-				From:   "SYSTEM",
-				To:     sig.From,
-				RoomID: sig.RoomID,
-				SDP:    offer.SDP,
-			})
+		if err != nil {
+			a.logger.Error("SFU: Failed to restart ICE for %s after subscription: %v", sig.From, err)
+			return
+		}
+		if err := a.signalHub.Send(ctx, core.Signal{
+			Type:   core.SignalSFUOffer,
+			From:   "SYSTEM",
+			To:     sig.From,
+			RoomID: sig.RoomID,
+			SDP:    offer.SDP,
+		}); err != nil {
+			a.logger.Error("SFU: Failed to send post-subscription offer to %s: %v", sig.From, err)
 		}
 	})
 
@@ -833,7 +886,7 @@ func (a *App) setupRTCSignaling() {
 		
 		target := userID
 		if bundle.DeviceID != "" {
-			target = userID + ":" + bundle.DeviceID
+			target = userID + "::" + bundle.DeviceID
 		}
 
 		if err := a.e2eeStore.SavePreKeyBundle(ctx, target, &bundle); err != nil {
@@ -867,7 +920,7 @@ func (a *App) setupRTCSignaling() {
 			if a.device != nil {
 				devices, _ := a.device.GetDevices(ctx, targetUserID)
 				for _, d := range devices {
-					bundle, err := a.e2eeStore.LoadPreKeyBundle(ctx, targetUserID+":"+d.DeviceID)
+					bundle, err := a.e2eeStore.LoadPreKeyBundle(ctx, targetUserID+"::"+d.DeviceID)
 					if err == nil && bundle != nil {
 						bundles = append(bundles, bundle)
 					}
@@ -901,7 +954,7 @@ func (a *App) setupRTCSignaling() {
 		defer cancel()
 
 		userID, deviceID := splitSessionID(sig.From)
-		target := userID + ":" + deviceID
+		target := userID + "::" + deviceID
 		
 		// Load existing bundle, add new OPKs, and save
 		existing, _ := a.e2eeStore.LoadPreKeyBundle(ctx, target)
@@ -932,7 +985,7 @@ func (a *App) setupRTCSignaling() {
 		// sig.To represents the destination UserID. We fan out to each device in the payload.
 		targetUserID := sig.To
 		for deviceID, encPayload := range fanout.Payloads {
-			targetPeerID := targetUserID + ":" + deviceID
+			targetPeerID := targetUserID + "::" + deviceID
 			
 			// Reconstruct a standard message signal for the target device
 			deviceSig := core.Signal{

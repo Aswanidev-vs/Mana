@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kuruvi — Premium Messenger</title>
     <link rel="stylesheet" href="css/style.css">
+    <!-- Content Security Policy -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' ws: wss:; img-src 'self' data:;">
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
 </head>
@@ -76,7 +78,10 @@
         <!-- Sidebar -->
         <aside id="sidebar">
             <div class="sidebar-header">
-                <h1 class="logo-text" style="font-size: 20px;">Kuruvi</h1>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <h1 class="logo-text" style="font-size: 20px;">Kuruvi</h1>
+                    <span id="connection-status" class="status-badge offline" title="Connection Status"></span>
+                </div>
                 <div style="display: flex; gap: 8px;">
                     <button class="btn-icon" id="new-group-btn" title="New Group"><i data-lucide="users"></i></button>
                     <button class="btn-icon" id="profile-btn" title="View Profile Mode"><i data-lucide="circle-user"></i></button>
