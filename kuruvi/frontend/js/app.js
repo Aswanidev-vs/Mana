@@ -104,119 +104,129 @@ const App = {
     },
 
     async handleWSMessage(msg) {
-        switch (msg.type) {
-            case 'message':
-                await this.onReceiveMessage(msg);
-                break;
-            case 'message_sync':
-                if (msg.messages) {
-                    for (const m of msg.messages) {
-                        await this.onReceiveMessage(m);
+        try {
+            switch (msg.type) {
+                case 'message':
+                case 'message_sync':
+                    if (msg.messages) {
+                        for (const m of msg.messages) await this.onReceiveMessage(m);
+                    } else {
+                        await this.onReceiveMessage(msg);
                     }
-                }
-                break;
-            case 'key_exchange':
-                const rawKey = new Uint8Array(atob(msg.payload).split('').map(c => c.charCodeAt(0)));
-                await Crypto.importRemoteKey(msg.from, rawKey);
-                console.log('Received public key from', msg.from);
-                break;
-            case 'offer':
-                this.onReceiveCallOffer(msg);
-                break;
-            case 'answer':
-            case 'sfu_answer':
-                console.log('Received RTC Answer');
-                RTC.handleAnswer(msg.sdp);
-                break;
-            case 'candidate':
-            case 'sfu_candidate':
-                console.log('Received ICE Candidate');
-                RTC.addIceCandidate(msg.candidate);
-                break;
-            case 'hangup':
-                console.log('Received Hangup');
-                this.endCall(false); // Don't send hangup back to avoid loops
-                break;
-            case 'track_added':
-                console.log('SFU: New track published');
-                ws.send(JSON.stringify({
-                    type: 'subscribe',
-                    from: API.uniqueId || API.username,
-                    room_id: msg.room_id,
-                    payload: msg.payload
-                }));
-                break;
-            case 'typing':
-                if (currentChat && msg.from === currentChat.id) {
-                    this.showTyping(msg.from);
-                }
-                break;
+                    break;
+                case 'key_exchange':
+                    if (msg.payload) {
+                        const rawKey = new Uint8Array(atob(msg.payload).split('').map(c => c.charCodeAt(0)));
+                        await Crypto.importRemoteKey(msg.from, rawKey);
+                        console.log('Received public key from', msg.from);
+                    }
+                    break;
+                case 'call_start':
+                    console.log('Received Call Invite from', msg.from);
+                    this.onReceiveCallInvite(msg);
+                    break;
+                case 'offer':
+                case 'sfu_offer':
+                    this.onReceiveCallOffer(msg);
+                    break;
+                case 'answer':
+                case 'sfu_answer':
+                    console.log('Received RTC Answer');
+                    const rewrittenSdp = this.rewriteSDP(msg.sdp);
+                    RTC.handleAnswer(rewrittenSdp);
+                    break;
+                case 'candidate':
+                case 'sfu_candidate':
+                    let candidate = msg.candidate;
+                    if (typeof candidate === 'string') candidate = JSON.parse(candidate);
+                    if (candidate && candidate.candidate) {
+                        candidate.candidate = this.rewriteICECandidate(candidate.candidate);
+                    }
+                    RTC.addIceCandidate(candidate);
+                    break;
+                case 'hangup':
+                    console.log('Received Hangup');
+                    this.endCall(false); // Don't send hangup back to avoid loops
+                    break;
+                case 'track_added':
+                    console.log('SFU: New track published');
+                    ws.send(JSON.stringify({
+                        type: 'subscribe',
+                        from: API.uniqueId || API.userId || API.username,
+                        room_id: msg.room_id,
+                        payload: msg.payload
+                    }));
+                    break;
+                case 'typing':
+                    if (currentChat && msg.from === currentChat.id) {
+                        this.showTyping(msg.from);
+                    }
+                    break;
+            }
+        } catch (err) {
+            console.error('Error handling WebSocket message:', err, msg);
         }
     },
 
     async onReceiveMessage(msg) {
         let text = '';
         const senderId = msg.sender_id || msg.from;
+        const myId = API.userId || API.username;
+        const isSelf = senderId === myId;
         
-        try {
-            // Decode Base64 string to Uint8Array first!
-            const binaryString = atob(msg.payload);
-            const data = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                data[i] = binaryString.charCodeAt(i);
-            }
+        // Resolve which Chat/Conversation this belongs to
+        // For groups, use room_id. For private, use the *other* person's ID.
+        let chatId = msg.room_id || (isSelf ? (msg.target_id || msg.to) : senderId);
+        if (!chatId) {
+            console.warn('Could not resolve ChatID for message:', msg);
+            return;
+        }
 
-            // 2. Attempt decryption
-            try {
-                text = await Crypto.decrypt(data, senderId);
-            } catch (err) {
-                // If decryption failed, try fetching the latest key and retry once
-                console.warn('Decryption failed, re-fetching key for', senderId);
-                const remotePubRaw = await API.getPublicKey(senderId);
-                if (remotePubRaw) {
-                    await Crypto.importRemoteKey(senderId, remotePubRaw);
+        try {
+            if (msg.payload) {
+                // Decode Base64 string to Uint8Array first!
+                const binaryString = atob(msg.payload);
+                const data = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) data[i] = binaryString.charCodeAt(i);
+
+                // Attempt decryption if not self-sent (self-sent are usually plaintext in local sync or already handled)
+                try {
                     text = await Crypto.decrypt(data, senderId);
-                } else {
-                    throw err; // Re-throw if no key available
+                } catch (err) {
+                    // Fallback to direct decoding
+                    const decoded = new TextDecoder().decode(data);
+                    // Check if it's likely plaintext or failed binary
+                    if (/[^\x20-\x7E\n\r]/.test(decoded)) throw new Error("Binary content");
+                    text = decoded;
                 }
+            } else {
+                text = msg.text || '';
             }
         } catch (e) {
-            console.error('E2EE Decryption failed permanently for msg from', senderId, e);
-            // Fallback for non-encrypted or identity mismatch
-            try {
-                const raw = new Uint8Array(atob(msg.payload).split('').map(c => c.charCodeAt(0)));
-                const decoded = new TextDecoder().decode(raw);
-                if (/[^\x20-\x7E]/.test(decoded)) throw new Error("Binary content");
-                text = decoded;
-            } catch (err) {
-                text = "[Encrypted Message]";
-            }
+            console.error('Decryption/Decoding failed for msg from', senderId, e);
+            text = "[Message Content Error]";
         }
 
         // 1. Storage: Save to local session memory
-        if (!this.messages[senderId]) this.messages[senderId] = [];
+        if (!this.messages[chatId]) this.messages[chatId] = [];
         const msgObj = { text, senderId, timestamp: new Date() };
-        this.messages[senderId].push(msgObj);
+        this.messages[chatId].push(msgObj);
 
         // 2. Update/Add Contact in Sidebar
-        let contact = contacts.find(c => c.id === senderId);
-        if (!contact) {
-            contact = { 
-                id: senderId, 
-                name: senderId.replace(/^u-/, ''), 
-                lastMsg: text 
-            };
+        let contact = contacts.find(c => c.id === chatId);
+        if (!contact && !msg.room_id) {
+            // Add new private contact
+            contact = { id: chatId, name: chatId.replace(/^u-/, ''), lastMsg: text };
             contacts.unshift(contact);
-            // PERSIST contact so it stays after refresh
-            API.addContact(senderId).catch(console.error);
-        } else {
+            API.addContact(chatId).catch(console.error);
+        } else if (contact) {
             contact.lastMsg = text;
-            contacts = [contact, ...contacts.filter(c => c.id !== senderId)];
+            contacts = [contact, ...contacts.filter(c => c.id !== chatId)];
         }
         this.renderContacts();
 
         // 3. Render to Chat UI if this is the active chat
-        if (currentChat && currentChat.id === senderId) {
+        if (currentChat && currentChat.id === chatId) {
             this.addMessageToUI(msgObj);
         }
     },
@@ -498,6 +508,27 @@ const App = {
         document.getElementById('voice-call-btn').onclick = () => this.startCall('audio');
         document.getElementById('screenshare-btn').onclick = () => this.toggleScreenshare();
         document.getElementById('end-call-btn').onclick = () => this.endCall();
+
+        // Clear Chat
+        document.getElementById('clear-chat-btn').onclick = async () => {
+            if (!currentChat) return;
+            if (!confirm(`Are you sure you want to permanently delete your chat history with ${currentChat.name}?`)) return;
+            
+            try {
+                await API.deleteHistory(currentChat.id);
+                this.messages[currentChat.id] = [];
+                document.getElementById('message-container').innerHTML = `<div style="text-align:center; opacity:0.5; padding:20px; display:flex; align-items:center; justify-content:center; gap:8px;"><i data-lucide="lock" style="width:14px; height:14px;"></i> End-to-End Encrypted</div>`;
+                lucide.createIcons();
+                // Find contact and clear last message in UI
+                const contact = contacts.find(c => c.id === currentChat.id);
+                if (contact) {
+                    contact.lastMsg = "";
+                    this.renderContacts();
+                }
+            } catch (err) {
+                alert('Failed to clear chat: ' + err.message);
+            }
+        };
 
         // Responsive Mobile Back Button
         document.getElementById('back-to-sidebar').onclick = () => {
@@ -792,47 +823,110 @@ const App = {
 
     async startCall(type) {
         this.callType = type; // 'audio' or 'video'
-        document.getElementById('call-overlay').classList.remove('hidden');
+        const overlay = document.getElementById('call-overlay');
+        const statusEl = document.getElementById('ice-status');
         
-        await RTC.init([{ urls: 'stun:stun.l.google.com:19302' }]);
+        overlay.classList.remove('hidden');
+        if (statusEl) statusEl.textContent = 'Status: Initializing...';
         
-        // Use proper callback system instead of direct override
-        RTC.onTrack = (stream, track) => {
-            console.log('Remote track received:', track.kind);
-            this.addStreamToUI('remote', stream);
-        };
-        
-        // Send ICE candidates to remote peer
-        RTC.pc.onicecandidate = (e) => {
-            if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                    type: 'candidate',
-                    to: currentChat.id,
-                    from: API.userId || API.username,
-                    candidate: e.candidate
-                }));
-            }
-        };
+        try {
+            const iceConfig = [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { 
+                    urls: 'turn:relay.metered.ca:80?transport=tcp',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:relay.metered.ca:443?transport=tcp',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:80?transport=tcp',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                }
+            ];
 
-        const stream = await RTC.getUserMedia(type === 'video', true);
-        this.addStreamToUI('local', stream);
-        
-        const offer = await RTC.createOffer();
-        const isGroup = currentChat && currentChat.id.startsWith('group-');
-        ws.send(JSON.stringify({
-            type: isGroup ? 'sfu_offer' : 'offer',
-            to: isGroup ? undefined : currentChat.id,
-            room_id: isGroup ? currentChat.id : undefined,
-            from: API.userId || API.username,
-            sdp: offer.sdp,
-            call_type: type 
-        }));
-        
+            if (statusEl) statusEl.textContent = 'Status: Setting up ICE...';
+            // Use 'all' instead of 'relay' to allow the browser to use our TCP-Mux tunnel candidates.
+            await RTC.init(iceConfig, 'all'); 
+            
+            if (statusEl) statusEl.textContent = `Status: ICE ${RTC.pc.iceConnectionState}`;
+            
+            RTC.onConnectionStateChange = (state) => {
+                if (statusEl) statusEl.textContent = `Status: ${state}`;
+            };
+
+            RTC.onTrack = (stream, track) => {
+                console.log('RTC: Received remote track:', track.kind);
+                this.addStreamToUI('remote', stream);
+            };
+            
+            RTC.pc.onicecandidate = (e) => {
+                if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                    const isGroup = currentChat && currentChat.id.startsWith('group-');
+                    const targetId = isGroup ? undefined : currentChat.id;
+                    let rid = currentChat.id;
+                    if (!isGroup) {
+                        const sortedIds = [API.userId, targetId].sort();
+                        rid = `private-${sortedIds[0]}-${sortedIds[1]}`;
+                    }
+
+                    ws.send(JSON.stringify({
+                        type: 'sfu_candidate', // Always use SFU type for tunnel mode
+                        room_id: rid,
+                        from: API.userId || API.username,
+                        candidate: e.candidate
+                    }));
+                }
+            };
+
+            if (statusEl) statusEl.textContent = 'Status: Requesting Camera/Mic...';
+            const stream = await RTC.getUserMedia(type === 'video', true);
+            this.addStreamToUI('local', stream);
+            
+            if (statusEl) statusEl.textContent = 'Status: Creating Offer...';
+            const offer = await RTC.createOffer();
+            
+            // For Kuruvi in tunnel mode, we route 1:1 calls through the SFU 
+            // to take advantage of the server's TCP-Mux on port 10000.
+            const isGroup = currentChat && currentChat.id.startsWith('group-');
+            const targetId = isGroup ? undefined : currentChat.id;
+            
+            // If it's a 1:1 call, we create a temporary 'virtual room' based on the two user IDs
+            // This allows the SFU to recognize the 1:1 call as a mini-room.
+            let roomId = currentChat.id;
+            if (!isGroup) {
+                // Ensure room ID is deterministic for both parties: "call-userA-userB"
+                const sortedIds = [API.userId, targetId].sort();
+                roomId = `private-${sortedIds[0]}-${sortedIds[1]}`;
+            }
+
+            if (statusEl) statusEl.textContent = 'Status: Sending Signal...';
+            ws.send(JSON.stringify({
+                type: 'sfu_offer', // Force SFU path for TCP relay support
+                to: targetId,
+                room_id: roomId,
+                from: API.userId || API.username,
+                sdp: offer.sdp,
+                call_type: type 
+            }));
+            
+            if (statusEl) statusEl.textContent = 'Status: Waiting for Peer...';
+        } catch (err) {
+            console.error('Call failed:', err);
+            if (statusEl) {
+                statusEl.style.color = '#ff4b2b';
+                statusEl.textContent = `Error: ${err.message}`;
+            }
+        }
         lucide.createIcons();
     },
 
-    async onReceiveCallOffer(msg) {
-        const callType = msg.call_type || 'video';
+    async onReceiveCallInvite(msg) {
+        const callType = msg.call_type || (msg.payload ? atob(msg.payload) : 'video');
         const callerName = msg.from.replace(/^u-/, '');
         const callLabel = callType === 'audio' ? '📞 Audio' : '📹 Video';
         
@@ -840,40 +934,118 @@ const App = {
         
         this.callType = callType;
         document.getElementById('call-overlay').classList.remove('hidden');
-        
-        await RTC.init([{ urls: 'stun:stun.l.google.com:19302' }]);
-        
-        // Remote track handler
-        RTC.onTrack = (stream, track) => {
-            console.log('Remote track received:', track.kind);
-            this.addStreamToUI('remote', stream);
-        };
-        
-        // Send ICE candidates
-        RTC.pc.onicecandidate = (e) => {
-            if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                    type: 'candidate',
-                    to: msg.from,
-                    from: API.userId || API.username,
-                    candidate: e.candidate
-                }));
-            }
-        };
+        const statusEl = document.getElementById('ice-status');
+        if (statusEl) statusEl.textContent = 'Status: Accepting...';
 
-        const useVideo = callType === 'video';
-        const stream = await RTC.getUserMedia(useVideo, true);
-        this.addStreamToUI('local', stream);
+        // Now initiate the SFU handshake
+        try {
+            const iceConfig = [{ urls: 'stun:stun.l.google.com:19302' }];
+            // Use 'all' instead of 'relay' for TCP-Mux tunnel support
+            await RTC.init(iceConfig, 'all'); 
+            
+            RTC.onConnectionStateChange = (state) => {
+                if (statusEl) statusEl.textContent = `Status: ${state}`;
+            };
+
+            RTC.onTrack = (stream, track) => {
+                this.addStreamToUI('remote', stream);
+            };
+            
+            RTC.pc.onicecandidate = (e) => {
+                if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'sfu_candidate',
+                        room_id: msg.room_id,
+                        from: API.userId || API.username,
+                        candidate: e.candidate
+                    }));
+                }
+            };
+
+            const stream = await RTC.getUserMedia(this.callType === 'video', true);
+            this.addStreamToUI('local', stream);
+            
+            const offer = await RTC.createOffer();
+            ws.send(JSON.stringify({
+                type: 'sfu_offer',
+                room_id: msg.room_id,
+                from: API.userId || API.username,
+                sdp: offer.sdp
+            }));
+        } catch (err) {
+            console.error('Call initialization failed:', err);
+            if (statusEl) statusEl.textContent = `Error: ${err.message}`;
+        }
+    },
+
+    async onReceiveCallOffer(msg) {
+        const statusEl = document.getElementById('ice-status');
+        if (statusEl) statusEl.textContent = 'Status: Processing Offer...';
         
-        const answer = await RTC.handleOffer(msg.sdp);
-        ws.send(JSON.stringify({
-            type: 'answer',
-            to: msg.from,
-            from: API.userId || API.username,
-            sdp: answer.sdp
-        }));
+        try {
+            // Check if RTC is already initialized (e.g. we accepted an invite)
+            if (!RTC.pc) {
+                const iceConfig = [{ urls: 'stun:stun.l.google.com:19302' }];
+                // Use 'all' for TCP-Mux tunnel support
+                await RTC.init(iceConfig, 'all'); 
+                
+                RTC.onTrack = (stream, track) => {
+                    this.addStreamToUI('remote', stream);
+                };
+
+                RTC.pc.onicecandidate = (e) => {
+                    if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            type: 'sfu_candidate',
+                            room_id: msg.room_id,
+                            from: API.userId || API.username,
+                            candidate: e.candidate
+                        }));
+                    }
+                };
+            }
+
+            const isSFU = msg.type === 'sfu_offer' || (msg.payload && (atob(msg.payload) === 'sfu_relay' || msg.payload === 'sfu_relay'));
+            
+            // Handle the SDP offer
+            const rewrittenSDP = this.rewriteSDP(msg.sdp);
+            const answer = await RTC.handleOffer(rewrittenSDP);
+            
+            ws.send(JSON.stringify({
+                type: isSFU ? 'sfu_answer' : 'answer',
+                to: isSFU ? undefined : msg.from,
+                room_id: isSFU ? msg.room_id : undefined,
+                from: API.uniqueId || API.userId || API.username,
+                sdp: answer.sdp
+            }));
+        } catch (err) {
+            console.error('Call receive failed:', err);
+        }
+    },
+
+    rewriteSDP(sdp) {
+        if (!sdp) return sdp;
+        // Rewrite any IP address on port 10000 to our tunnel hostname
+        let tunnelHost = window.location.hostname;
+        if (tunnelHost.includes('.app.online.visualstudio.com')) {
+            tunnelHost = tunnelHost.replace(/-8080\./, '-10000.').replace(/-(\d+)\./, (m, p) => p === '10000' ? m : '-10000.');
+        }
         
-        lucide.createIcons();
+        // Regex to find IPs on port 10000 in SDP lines like "a=candidate..." or "c=IN IP4 ..."
+        const rewritten = sdp.replace(/(\d+\.\d+\.\d+\.\d+|localhost|0\.0\.0\.0) 10000/g, `${tunnelHost} 10000`);
+        if (rewritten !== sdp) console.log('RTC: Rewrote SDP to use tunnel host:', tunnelHost);
+        return rewritten;
+    },
+
+    rewriteICECandidate(c) {
+        if (!c || !c.includes('10000')) return c;
+        let tunnelHost = window.location.hostname;
+        if (tunnelHost.includes('.app.online.visualstudio.com')) {
+            tunnelHost = tunnelHost.replace(/-8080\./, '-10000.').replace(/-(\d+)\./, (m, p) => p === '10000' ? m : '-10000.');
+        }
+        const newCandidate = c.replace(/(\d+\.\d+\.\d+\.\d+|localhost|0\.0\.0\.0|\[::1\]|\[::\])/g, tunnelHost);
+        console.log(`RTC: Candidate Port 10000 detected. Mapping to: ${tunnelHost}`);
+        return newCandidate;
     },
 
     addStreamToUI(id, stream) {

@@ -50,6 +50,10 @@ type Config struct {
 	// Supported values are "all" and "relay".
 	ICETransportPolicy string `json:"ice_transport_policy"`
 
+	// WebRTCTCPPort is the dedicated TCP port for WebRTC media connections (TCP-Mux).
+	// Default: 10000
+	WebRTCTCPPort int `json:"webrtc_tcp_port"`
+
 	// GracefulShutdownTimeout is the max time to wait for connections to drain.
 	GracefulShutdownTimeout time.Duration `json:"graceful_shutdown_timeout"`
 
@@ -170,6 +174,7 @@ func DefaultConfig() Config {
 		ServiceVersion:          "dev",
 		DatabaseDriver:          "sqlite",
 		DatabaseDSN:             "mana.db",
+		WebRTCTCPPort:           10000,
 	}
 }
 

@@ -112,7 +112,7 @@ func New(cfg core.Config) *App {
 		config:       cfg,
 		roomManager:  room.NewManager(),
 		signalHub:    hub,
-		rtcManager:   rtc.NewManagerWithICEServers(cfg.STUNServers, cfg.TURNServers, cfg.ICETransportPolicy),
+		rtcManager:   rtc.NewManagerWithICEServers(cfg.STUNServers, cfg.TURNServers, cfg.ICETransportPolicy, cfg.WebRTCTCPPort),
 		callManager:  rtc.NewCallManager(),
 		mux:          http.NewServeMux(),
 		logger:       logger,
@@ -712,15 +712,20 @@ func (a *App) setupRTCSignaling() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		
+		// Ensure user is in the signaling room so they receive track_added notifications
+		a.signalHub.AddPeerToRoom(sig.RoomID, sig.From)
+		
 		userID, _ := splitSessionID(sig.From)
 		offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sig.SDP}
 		
+		// 1. Handle for the SFU (internal)
 		answer, err := a.rtcManager.HandleOffer(ctx, sig.From, userID, sig.RoomID, offer)
 		if err != nil {
 			a.logger.Error("SFU: Error handling offer from %s: %v", sig.From, err)
 			return
 		}
 		
+		// 2. Respond to the sender with the SFU answer
 		_ = a.signalHub.Send(ctx, core.Signal{
 			Type:   core.SignalSFUAnswer,
 			From:   "SYSTEM",
@@ -728,6 +733,19 @@ func (a *App) setupRTCSignaling() {
 			RoomID: sig.RoomID,
 			SDP:    answer.SDP,
 		})
+
+		// 3. RELAY a notification to the target peer if this is a 1:1 call
+		// This triggers the "Incoming Call" popup WITHOUT starting the WebRTC handshake yet.
+		if sig.To != "" {
+			a.logger.Info("SFU: Relaying call invite from %s to %s", sig.From, sig.To)
+			_ = a.signalHub.Send(ctx, core.Signal{
+				Type:    core.SignalCallStart, // Use call_start for notification only
+				From:    sig.From,
+				To:      sig.To,
+				RoomID:  sig.RoomID,
+				Payload: []byte(sig.Payload), // Relay the payload (which contains call type)
+			})
+		}
 	})
 
 	a.signalHub.On(core.SignalSFUAnswer, func(sig core.Signal) {
@@ -747,6 +765,11 @@ func (a *App) setupRTCSignaling() {
 	})
 
 	a.signalHub.On(core.SignalCandidate, func(sig core.Signal) {
+		// Only SFU handles signals without a target (broadcast to room/manager)
+		if sig.To != "" {
+			return
+		}
+
 		var candidate webrtc.ICECandidateInit
 		if str, ok := sig.Candidate.(string); ok {
 			json.Unmarshal([]byte(str), &candidate)
@@ -815,6 +838,12 @@ func (a *App) setupRTCSignaling() {
 		if a.e2eeStore == nil {
 			return
 		}
+		// Skip unmarshaling if this is a legacy base64 key swap instead of an X3DH bundle
+		if len(sig.Payload) == 0 || sig.Payload[0] != '{' {
+			// Older clients (like Kuruvi's toy ECDH) send purely binary keys over key_exchange.
+			return
+		}
+
 		// sig.Payload should be a JSON-serialized PublicPreKeyBundle
 		var bundle e2ee.PublicPreKeyBundle
 		if err := json.Unmarshal(sig.Payload, &bundle); err != nil {

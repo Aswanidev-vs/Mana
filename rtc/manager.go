@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"sync"
 	"time"
 
 	"github.com/Aswanidev-vs/mana/core"
+	"github.com/pion/ice/v4"
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
@@ -322,11 +324,11 @@ type Manager struct {
 
 // NewManager creates a new RTC Manager with configurable STUN servers.
 func NewManager(stunServers []string) *Manager {
-	return NewManagerWithICEServers(stunServers, nil, "all")
+	return NewManagerWithICEServers(stunServers, nil, "all", 10000)
 }
 
-// NewManagerWithICEServers creates a new RTC Manager with configurable STUN/TURN servers.
-func NewManagerWithICEServers(stunServers []string, turnServers []core.ICEServerConfig, transportPolicy string) *Manager {
+// NewManagerWithICEServers creates a new RTC Manager with configurable STUN/TURN servers and TCP-Mux.
+func NewManagerWithICEServers(stunServers []string, turnServers []core.ICEServerConfig, transportPolicy string, tcpMuxPort int) *Manager {
 	if len(stunServers) == 0 {
 		stunServers = []string{
 			"stun:stun.l.google.com:19302",
@@ -396,6 +398,28 @@ func NewManagerWithICEServers(stunServers []string, turnServers []core.ICEServer
 	s.SetSRTPReplayProtectionWindow(512)
 	s.SetICETimeouts(5*time.Second, 10*time.Second, 2*time.Second)
 	s.SetDTLSRetransmissionInterval(100 * time.Millisecond)
+
+	// Enable TCP-Mux for NAT traversal via tunnels
+	if tcpMuxPort > 0 {
+		tcpListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4zero, Port: tcpMuxPort})
+		if err != nil {
+			log.Printf("RTC: Failed to start TCP-Mux on port %d: %v", tcpMuxPort, err)
+		} else {
+			log.Printf("RTC: WebRTC TCP-Mux listening on %s", tcpListener.Addr())
+			tcpMux := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+				Listener:       tcpListener,
+				Logger:         nil, // Use default pion logger
+				ReadBufferSize: 20,
+			})
+			s.SetICETCPMux(tcpMux)
+			
+			// Allow both UDP and TCP network types
+			s.SetNetworkTypes([]webrtc.NetworkType{
+				webrtc.NetworkTypeUDP4,
+				webrtc.NetworkTypeTCP4,
+			})
+		}
+	}
 
 	// Create API
 	api := webrtc.NewAPI(
