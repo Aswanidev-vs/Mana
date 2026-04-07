@@ -152,7 +152,7 @@ const App = {
                     console.log('SFU: New track published');
                     ws.send(JSON.stringify({
                         type: 'subscribe',
-                        from: API.uniqueId || API.userId || API.username,
+                        from: API.userId || API.username,
                         room_id: msg.room_id,
                         payload: msg.payload
                     }));
@@ -255,7 +255,9 @@ const App = {
                 e.preventDefault();
                 const targetId = btn.getAttribute('data-target');
                 const pInput = document.getElementById(targetId);
-                const icon = btn.querySelector('i');
+                const icon = btn.querySelector('i, svg'); // Handle Lucide replacement
+                if (!pInput || !icon) return;
+
                 if (pInput.type === 'password') {
                     pInput.type = 'text';
                     icon.setAttribute('data-lucide', 'eye-off');
@@ -510,25 +512,28 @@ const App = {
         document.getElementById('end-call-btn').onclick = () => this.endCall();
 
         // Clear Chat
-        document.getElementById('clear-chat-btn').onclick = async () => {
-            if (!currentChat) return;
-            if (!confirm(`Are you sure you want to permanently delete your chat history with ${currentChat.name}?`)) return;
-            
-            try {
-                await API.deleteHistory(currentChat.id);
-                this.messages[currentChat.id] = [];
-                document.getElementById('message-container').innerHTML = `<div style="text-align:center; opacity:0.5; padding:20px; display:flex; align-items:center; justify-content:center; gap:8px;"><i data-lucide="lock" style="width:14px; height:14px;"></i> End-to-End Encrypted</div>`;
-                lucide.createIcons();
-                // Find contact and clear last message in UI
-                const contact = contacts.find(c => c.id === currentChat.id);
-                if (contact) {
-                    contact.lastMsg = "";
-                    this.renderContacts();
+        const clearChatBtn = document.getElementById('clear-chat-btn');
+        if (clearChatBtn) {
+            clearChatBtn.onclick = async () => {
+                if (!currentChat) return;
+                if (!confirm(`Are you sure you want to permanently delete your chat history with ${currentChat.name}?`)) return;
+                
+                try {
+                    await API.deleteHistory(currentChat.id);
+                    this.messages[currentChat.id] = [];
+                    document.getElementById('message-container').innerHTML = `<div style="text-align:center; opacity:0.5; padding:20px; display:flex; align-items:center; justify-content:center; gap:8px;"><i data-lucide="lock" style="width:14px; height:14px;"></i> End-to-End Encrypted</div>`;
+                    lucide.createIcons();
+                    // Find contact and clear last message in UI
+                    const contact = contacts.find(c => c.id === currentChat.id);
+                    if (contact) {
+                        contact.lastMsg = "";
+                        this.renderContacts();
+                    }
+                } catch (err) {
+                    alert('Failed to clear chat: ' + err.message);
                 }
-            } catch (err) {
-                alert('Failed to clear chat: ' + err.message);
-            }
-        };
+            };
+        }
 
         // Responsive Mobile Back Button
         document.getElementById('back-to-sidebar').onclick = () => {
@@ -857,6 +862,10 @@ const App = {
             
             RTC.onConnectionStateChange = (state) => {
                 if (statusEl) statusEl.textContent = `Status: ${state}`;
+                console.log(`RTC: Connection state changed to ${state}`);
+                if (state === 'failed') {
+                    console.error('RTC: ICE Connection Failed. Check if port 10000 is open on the tunnel.');
+                }
             };
 
             RTC.onTrack = (stream, track) => {
@@ -1015,7 +1024,7 @@ const App = {
                 type: isSFU ? 'sfu_answer' : 'answer',
                 to: isSFU ? undefined : msg.from,
                 room_id: isSFU ? msg.room_id : undefined,
-                from: API.uniqueId || API.userId || API.username,
+                from: API.userId || API.username,
                 sdp: answer.sdp
             }));
         } catch (err) {
@@ -1025,26 +1034,39 @@ const App = {
 
     rewriteSDP(sdp) {
         if (!sdp) return sdp;
-        // Rewrite any IP address on port 10000 to our tunnel hostname
+        // The server now uses NAT 1:1 mapping for port 10000.
+        // We only rewrite if we detect a local IP hiding a tunnel.
         let tunnelHost = window.location.hostname;
-        if (tunnelHost.includes('.app.online.visualstudio.com')) {
-            tunnelHost = tunnelHost.replace(/-8080\./, '-10000.').replace(/-(\d+)\./, (m, p) => p === '10000' ? m : '-10000.');
+        if (tunnelHost.includes('-8080.')) {
+            tunnelHost = tunnelHost.replace('-8080.', '-10000.');
+        } else if (tunnelHost.includes(':8080')) {
+            tunnelHost = tunnelHost.replace(':8080', ':10000');
         }
-        
-        // Regex to find IPs on port 10000 in SDP lines like "a=candidate..." or "c=IN IP4 ..."
-        const rewritten = sdp.replace(/(\d+\.\d+\.\d+\.\d+|localhost|0\.0\.0\.0) 10000/g, `${tunnelHost} 10000`);
+
+        const rewritten = sdp.replace(/(\d+\.\d+\.\d+\.\d+|localhost|0\.0\.0\.0|\[::1\]|\[::\]) 10000/g, `${tunnelHost} 10000`);
         if (rewritten !== sdp) console.log('RTC: Rewrote SDP to use tunnel host:', tunnelHost);
         return rewritten;
     },
 
     rewriteICECandidate(c) {
         if (!c || !c.includes('10000')) return c;
+        
+        // If it already looks like a tunnel hostname, don't touch it
+        if (c.includes('.visualstudio.com') || c.includes('.app.online') || c.includes('.devtunnels.ms')) return c;
+
         let tunnelHost = window.location.hostname;
-        if (tunnelHost.includes('.app.online.visualstudio.com')) {
-            tunnelHost = tunnelHost.replace(/-8080\./, '-10000.').replace(/-(\d+)\./, (m, p) => p === '10000' ? m : '-10000.');
+        if (tunnelHost.includes('-8080.')) {
+            tunnelHost = tunnelHost.replace('-8080.', '-10000.');
+        } else if (tunnelHost.includes(':8080')) {
+            tunnelHost = tunnelHost.replace(':8080', ':10000');
+        } else if (tunnelHost.includes('-8080.inc1.')) {
+            tunnelHost = tunnelHost.replace('-8080.inc1.', '-10000.inc1.');
         }
-        const newCandidate = c.replace(/(\d+\.\d+\.\d+\.\d+|localhost|0\.0\.0\.0|\[::1\]|\[::\])/g, tunnelHost);
-        console.log(`RTC: Candidate Port 10000 detected. Mapping to: ${tunnelHost}`);
+        
+        // Final fallback: standard IP regex replacement for port 10000
+        const IP_REGEX = /(\d+\.\d+\.\d+\.\d+|localhost|0\.0\.0\.0|\[::1\]|\[::\])/g;
+        const newCandidate = c.replace(IP_REGEX, tunnelHost);
+        console.log(`RTC: Candidate Port 10000 (Private) detected. Mapping to: ${tunnelHost}`);
         return newCandidate;
     },
 

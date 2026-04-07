@@ -54,6 +54,17 @@ type Config struct {
 	// Default: 10000
 	WebRTCTCPPort int `json:"webrtc_tcp_port"`
 
+	// WebRTCUDPPort is the optional dedicated UDP port for WebRTC media connections (UDP-Mux).
+	// If 0, a dynamic port from the range is used (standard).
+	WebRTCUDPPort int `json:"webrtc_udp_port"`
+
+	// WebRTCForceTCP restricts WebRTC to TCP-only for dev tunnels/firewall stability.
+	WebRTCForceTCP bool `json:"webrtc_force_tcp"`
+
+	// WebRTCPortRangeLow/High defines the range for dynamic media ports.
+	WebRTCPortRangeLow  uint16 `json:"webrtc_port_range_low"`
+	WebRTCPortRangeHigh uint16 `json:"webrtc_port_range_high"`
+
 	// GracefulShutdownTimeout is the max time to wait for connections to drain.
 	GracefulShutdownTimeout time.Duration `json:"graceful_shutdown_timeout"`
 
@@ -128,6 +139,9 @@ type Config struct {
 	TraceSampleRatio float64 `json:"trace_sample_ratio"`
 	ServiceName      string  `json:"service_name"`
 	ServiceVersion   string  `json:"service_version"`
+
+	// ExternalIPs is a list of public IPs or hostnames for NAT 1:1 mapping in WebRTC.
+	ExternalIPs []string `json:"external_ips"`
 }
 
 // ICEServerConfig describes an authenticated ICE server, typically TURN.
@@ -153,6 +167,7 @@ func DefaultConfig() Config {
 		JWTIssuer:       "mana",
 		JWTExpiry:       24 * time.Hour,
 		STUNServers: []string{
+			"stun:stun.cloudflare.com:3478",
 			"stun:stun.l.google.com:19302",
 			"stun:stun1.l.google.com:19302",
 		},
@@ -174,7 +189,11 @@ func DefaultConfig() Config {
 		ServiceVersion:          "dev",
 		DatabaseDriver:          "sqlite",
 		DatabaseDSN:             "mana.db",
-		WebRTCTCPPort:           10000,
+		WebRTCTCPPort:       10000,
+		WebRTCUDPPort:       0, // Default to dynamic
+		WebRTCForceTCP:      false,
+		WebRTCPortRangeLow:  49152,
+		WebRTCPortRangeHigh: 65535,
 	}
 }
 

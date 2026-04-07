@@ -128,6 +128,7 @@
                     </div>
                     <div style="display: flex; gap: 4px;">
                         <button class="btn-icon hidden" id="manage-group-btn-header" title="Manage Group"><i data-lucide="settings"></i></button>
+                        <button class="btn-icon" id="clear-chat-btn" title="Clear History"><i data-lucide="trash"></i></button>
                         <button class="btn-icon" id="voice-call-btn" title="Audio Call"><i data-lucide="phone"></i></button>
                         <button class="btn-icon" id="video-call-btn" title="Video Call"><i data-lucide="video"></i></button>
                         <button class="btn-icon"><i data-lucide="more-vertical"></i></button>
@@ -193,18 +194,22 @@
                 <div id="profile-error" style="color: var(--danger); font-size: 13px; margin-top: 8px; min-height: 20px;"></div>
             </div>
 
-            <div class="modal-footer" style="padding-top: 15px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 16px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-                    <button id="delete-account-btn" class="btn-icon" style="color: var(--danger); background: rgba(255, 71, 87, 0.1); width: auto; padding: 0 16px; border-radius: 8px; font-size: 13px; height: 36px;">
-                        <i data-lucide="trash-2" style="width: 14px;"></i> Delete Account
+            <div class="modal-footer" style="padding-top: 20px; border-top: 1px solid rgba(255, 255, 255, 0.08); display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px; width: 100%;">
+                
+                <!-- Secondary / Destructive Actions (Left) -->
+                <div style="display: flex; gap: 4px;">
+                    <button id="delete-account-btn" style="display: flex; align-items: center; gap: 6px; color: var(--danger); background: transparent; padding: 8px 12px; border-radius: 8px; font-size: 13px; border: none; cursor: pointer; font-weight: 500; transition: all 0.2s;" onmouseover="this.style.background='rgba(255, 71, 87, 0.1)'" onmouseout="this.style.background='transparent'">
+                        <i data-lucide="trash-2" style="width: 14px;"></i> Delete
                     </button>
-                    <button id="logout-btn" class="btn-icon" style="color: var(--text-secondary); background: rgba(255,255,255,0.05); width: auto; padding: 0 16px; border-radius: 8px; font-size: 13px; height: 36px;">
+                    <button id="logout-btn" style="display: flex; align-items: center; gap: 6px; color: var(--text-secondary); background: transparent; padding: 8px 12px; border-radius: 8px; font-size: 13px; border: none; cursor: pointer; font-weight: 500; transition: all 0.2s;" onmouseover="this.style.background='rgba(255, 255, 255, 0.05)'" onmouseout="this.style.background='transparent'">
                         <i data-lucide="log-out" style="width: 14px;"></i> Sign Out
                     </button>
                 </div>
-                <div style="display: flex; gap: 10px; justify-content: flex-end; width: 100%;">
-                    <button id="cancel-profile-btn" class="btn-primary" style="background: var(--bg-surface); color: var(--text-primary); width: auto; padding: 0 20px;">Cancel</button>
-                    <button id="save-profile-btn" class="btn-primary" style="width: auto; padding: 0 20px;">Save All</button>
+
+                <!-- Primary Actions (Right) -->
+                <div style="display: flex; gap: 12px;">
+                    <button id="cancel-profile-btn" style="background: rgba(255,255,255,0.05); color: var(--text-primary); padding: 0 20px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; font-weight: 500; height: 36px; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='rgba(255,255,255,0.05)'">Cancel</button>
+                    <button id="save-profile-btn" class="btn-primary" style="height: 36px; padding: 0 20px; width: auto;">Save All</button>
                 </div>
             </div>
         </div>

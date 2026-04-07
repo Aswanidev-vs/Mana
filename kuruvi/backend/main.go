@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,11 +43,24 @@ func main() {
 	cfg.AllowedOrigins = []string{"*"}
 	// cfg.ProductStorePath = "data/product.json" // Commented out to avoid nil product store panic
 	cfg.AttachmentDir = "data/attachments"
+	
+	// Support NAT 1:1 and network specialization via env var
+	if extIP := os.Getenv("RTC_EXTERNAL_IP"); extIP != "" {
+		cfg.ExternalIPs = []string{extIP}
+	}
+	if os.Getenv("RTC_FORCE_TCP") == "true" {
+		cfg.WebRTCForceTCP = true
+	}
+	if portStr := os.Getenv("RTC_UDP_PORT"); portStr != "" {
+		if p, err := strconv.Atoi(portStr); err == nil {
+			cfg.WebRTCUDPPort = p
+		}
+	}
 
 	// Plug-and-play database: point the framework at our SQLite file.
 	// The framework will auto-create all tables (accounts, messages, profiles, etc.)
 	cfg.DatabaseDriver = db.SQLite
-	cfg.DatabaseDSN = "data/kuruvi.db"
+	cfg.DatabaseDSN = "data/kuruvi.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 
 	// Create data directories
 	os.MkdirAll("data/attachments", 0755)
@@ -1191,7 +1205,8 @@ func main() {
 			VALUES (?, ?, ?, ?)`, 
 			selfID, req.ContactID, "New contact", time.Now())
 		if err != nil {
-			http.Error(w, "persistence error", http.StatusInternalServerError)
+			log.Printf("[Contacts] Add failure for %s -> %s: %v", selfID, req.ContactID, err)
+			http.Error(w, "persistence error: " + err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
