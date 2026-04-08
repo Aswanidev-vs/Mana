@@ -1051,8 +1051,22 @@ const App = {
     rewriteICECandidate(c) {
         if (!c || !c.includes('10000')) return c;
         
-        // If it already looks like a tunnel hostname, don't touch it
-        if (c.includes('.visualstudio.com') || c.includes('.app.online') || c.includes('.devtunnels.ms')) return c;
+        // If it already looks like a tunnel hostname, don't touch it.
+        // Parse the candidate to extract the host and check its domain safely.
+        try {
+            const parts = c.trim().split(/\s+/);
+            // In typical ICE candidates, the related address/host is the last token.
+            const hostToken = parts[parts.length - 1] || '';
+            const host = hostToken.toLowerCase();
+            const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+            const isIp = ipPattern.test(host) || host === 'localhost' || host === '0.0.0.0' || host === '[::1]' || host === '[::]';
+            const tunnelDomains = ['.visualstudio.com', '.app.online', '.devtunnels.ms'];
+            if (!isIp && tunnelDomains.some(d => host.endsWith(d))) {
+                return c;
+            }
+        } catch (e) {
+            // If parsing fails, fall through to the existing rewrite logic.
+        }
 
         let tunnelHost = window.location.hostname;
         if (tunnelHost.includes('-8080.')) {
