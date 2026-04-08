@@ -770,7 +770,13 @@ const App = {
         const isSelf = senderId === (API.userId || API.username);
         const msgDiv = document.createElement('div');
         msgDiv.className = `message ${isSelf ? 'self' : 'received'}`;
-        let contentHtml = this.escapeHTML(text);
+
+        // Create message bubble container
+        const bubbleDiv = document.createElement('div');
+        bubbleDiv.className = 'message-bubble';
+
+        // Default content is plain text message
+        let messageContentNode = null;
 
         if (text.includes('/attachments/')) {
             // Resolve relative URLs strictly against the configured API backend
@@ -782,40 +788,135 @@ const App = {
 
             const fileName = text.split('/').pop();
             const ext = fileName.split('.').pop().toLowerCase();
-            const downloadAttr = `download="${fileName}"`;
-            
-            const downloadBtn = `<a href="${this.escapeHTML(mediaUrl)}" ${downloadAttr} class="download-mini-btn" title="Download"><i data-lucide="download" style="width:14px;"></i></a>`;
+
+            // Container for media content
+            const mediaContainer = document.createElement('div');
+            mediaContainer.className = 'media-container';
+
+            // Helper to create a small download button/link
+            const createDownloadMiniButton = () => {
+                const a = document.createElement('a');
+                a.href = mediaUrl;
+                a.className = 'download-mini-btn';
+                a.title = 'Download';
+                a.setAttribute('download', fileName);
+                const icon = document.createElement('i');
+                icon.setAttribute('data-lucide', 'download');
+                icon.style.width = '14px';
+                a.appendChild(icon);
+                return a;
+            };
 
             if (['jpg','jpeg','png','gif','webp'].includes(ext)) {
-                contentHtml = `
-                    <div class="media-container">
-                        <img src="${this.escapeHTML(mediaUrl)}" style="max-width:300px; border-radius:8px; cursor:pointer;" onclick="window.open('${this.escapeHTML(mediaUrl)}', '_blank')">
-                        ${downloadBtn}
-                    </div>`;
+                const img = document.createElement('img');
+                img.src = mediaUrl;
+                img.style.maxWidth = '300px';
+                img.style.borderRadius = '8px';
+                img.style.cursor = 'pointer';
+                img.addEventListener('click', () => {
+                    window.open(mediaUrl, '_blank');
+                });
+
+                mediaContainer.appendChild(img);
+                mediaContainer.appendChild(createDownloadMiniButton());
+                messageContentNode = mediaContainer;
             } else if (['mp4','webm','ogg'].includes(ext)) {
-                contentHtml = `
-                    <div class="media-container">
-                        <video src="${this.escapeHTML(mediaUrl)}" controls style="max-width:300px; border-radius:8px;"></video>
-                        ${downloadBtn}
-                    </div>`;
+                const video = document.createElement('video');
+                video.src = mediaUrl;
+                video.controls = true;
+                video.style.maxWidth = '300px';
+                video.style.borderRadius = '8px';
+
+                mediaContainer.appendChild(video);
+                mediaContainer.appendChild(createDownloadMiniButton());
+                messageContentNode = mediaContainer;
             } else if (['mp3','wav','m4a','aac'].includes(ext)) {
-                contentHtml = `
-                    <div class="media-container">
-                        <audio src="${this.escapeHTML(mediaUrl)}" controls style="width:250px;"></audio>
-                        ${downloadBtn}
-                    </div>`;
+                const audio = document.createElement('audio');
+                audio.src = mediaUrl;
+                audio.controls = true;
+                audio.style.width = '250px';
+
+                mediaContainer.appendChild(audio);
+                mediaContainer.appendChild(createDownloadMiniButton());
+                messageContentNode = mediaContainer;
             } else {
-                contentHtml = `
-                    <div style="display:flex; align-items:center; gap:8px;">
-                        <a href="${this.escapeHTML(mediaUrl)}" target="_blank" class="attachment-link" style="display:flex; align-items:center; gap:8px; color:var(--accent-cyan); background:rgba(255,255,255,0.05); padding:10px; border-radius:8px; border:1px solid var(--border); flex:1;">
-                            <i data-lucide="file-text"></i><span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:200px;">${this.escapeHTML(fileName)}</span>
-                        </a>
-                        <a href="${this.escapeHTML(mediaUrl)}" ${downloadAttr} class="btn-icon" style="background:var(--bg-surface); padding:8px;"><i data-lucide="download"></i></a>
-                    </div>`;
+                // Generic file download layout
+                const wrapper = document.createElement('div');
+                wrapper.style.display = 'flex';
+                wrapper.style.alignItems = 'center';
+                wrapper.style.gap = '8px';
+
+                const link = document.createElement('a');
+                link.href = mediaUrl;
+                link.target = '_blank';
+                link.className = 'attachment-link';
+                link.style.display = 'flex';
+                link.style.alignItems = 'center';
+                link.style.gap = '8px';
+                link.style.color = 'var(--accent-cyan)';
+                link.style.background = 'rgba(255,255,255,0.05)';
+                link.style.padding = '10px';
+                link.style.borderRadius = '8px';
+                link.style.border = '1px solid var(--border)';
+                link.style.flex = '1';
+
+                const fileIcon = document.createElement('i');
+                fileIcon.setAttribute('data-lucide', 'file-text');
+
+                const fileNameSpan = document.createElement('span');
+                fileNameSpan.style.overflow = 'hidden';
+                fileNameSpan.style.textOverflow = 'ellipsis';
+                fileNameSpan.style.whiteSpace = 'nowrap';
+                fileNameSpan.style.maxWidth = '200px';
+                fileNameSpan.textContent = fileName;
+
+                link.appendChild(fileIcon);
+                link.appendChild(fileNameSpan);
+
+                const downloadBtn = document.createElement('a');
+                downloadBtn.href = mediaUrl;
+                downloadBtn.className = 'btn-icon';
+                downloadBtn.style.background = 'var(--bg-surface)';
+                downloadBtn.style.padding = '8px';
+                downloadBtn.setAttribute('download', fileName);
+                const downloadIcon = document.createElement('i');
+                downloadIcon.setAttribute('data-lucide', 'download');
+                downloadBtn.appendChild(downloadIcon);
+
+                wrapper.appendChild(link);
+                wrapper.appendChild(downloadBtn);
+
+                messageContentNode = wrapper;
             }
         }
 
-        msgDiv.innerHTML = `<div class="message-bubble">${contentHtml}</div><div class="message-meta">${timestamp.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' })}${isSelf ? ' <i data-lucide="check-check" style="width:14px; color:var(--accent-cyan);"></i>' : ''}</div>`;
+        if (!messageContentNode) {
+            // Fallback to plain text message
+            const textNode = document.createElement('span');
+            // Use escapeHTML to mirror existing behavior, even though we use textContent
+            textNode.textContent = this.escapeHTML(text);
+            messageContentNode = textNode;
+        }
+
+        bubbleDiv.appendChild(messageContentNode);
+        msgDiv.appendChild(bubbleDiv);
+
+        // Message meta (time and status)
+        const metaDiv = document.createElement('div');
+        metaDiv.className = 'message-meta';
+        metaDiv.textContent = timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        if (isSelf) {
+            const space = document.createTextNode(' ');
+            metaDiv.appendChild(space);
+            const statusIcon = document.createElement('i');
+            statusIcon.setAttribute('data-lucide', 'check-check');
+            statusIcon.style.width = '14px';
+            statusIcon.style.color = 'var(--accent-cyan)';
+            metaDiv.appendChild(statusIcon);
+        }
+
+        msgDiv.appendChild(metaDiv);
         container.appendChild(msgDiv);
         
         // Use requestAnimationFrame to ensure DOM is rendered before scrolling
