@@ -765,6 +765,36 @@ const App = {
         }
     },
 
+    getSafeMediaUrl(text) {
+        // Only treat messages that clearly reference attachments as media URLs
+        if (!text || typeof text !== 'string' || !text.includes('/attachments/')) {
+            return null;
+        }
+
+        let mediaUrl = text;
+
+        // Resolve known attachment paths against the configured API backend
+        if (mediaUrl.startsWith('/attachments/')) {
+            const hostBase = API.baseUrl.replace('/api', '');
+            mediaUrl = hostBase + mediaUrl;
+        }
+
+        try {
+            // Normalize and validate the URL
+            const apiBase = new URL(API.baseUrl, window.location.origin);
+            const url = new URL(mediaUrl, apiBase.origin);
+
+            // Allow only HTTP(S) URLs and restrict to the same origin as the API backend
+            if ((url.protocol === 'http:' || url.protocol === 'https:') && url.origin === apiBase.origin) {
+                return url.href;
+            }
+        } catch (e) {
+            console.warn('Invalid media URL in message text:', text, e);
+        }
+
+        return null;
+    },
+
     addMessageToUI({ text, senderId, timestamp }) {
         const container = document.getElementById('message-container');
         const isSelf = senderId === (API.userId || API.username);
@@ -778,14 +808,9 @@ const App = {
         // Default content is plain text message
         let messageContentNode = null;
 
-        if (text.includes('/attachments/')) {
-            // Resolve relative URLs strictly against the configured API backend
-            let mediaUrl = text;
-            if (mediaUrl.startsWith('/attachments/')) {
-                const hostBase = API.baseUrl.replace('/api', '');
-                mediaUrl = hostBase + mediaUrl;
-            }
-
+        const mediaUrl = this.getSafeMediaUrl(text);
+        if (mediaUrl) {
+            // mediaUrl has been normalized and validated
             const fileName = text.split('/').pop();
             const ext = fileName.split('.').pop().toLowerCase();
 
@@ -809,6 +834,7 @@ const App = {
 
             if (['jpg','jpeg','png','gif','webp'].includes(ext)) {
                 const img = document.createElement('img');
+                // mediaUrl is a safe, validated URL at this point
                 img.src = mediaUrl;
                 img.style.maxWidth = '300px';
                 img.style.borderRadius = '8px';
