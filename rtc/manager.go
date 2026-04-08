@@ -320,28 +320,35 @@ type Manager struct {
 
 	api  *webrtc.API
 	conf webrtc.Configuration
-
-	externalIPs []string
 }
 
-// NewManager creates a new RTC Manager with default settings.
+// NewManager creates a new RTC Manager with configurable STUN servers.
 func NewManager(stunServers []string) *Manager {
-	cfg := core.DefaultConfig()
-	if len(stunServers) > 0 {
-		cfg.STUNServers = stunServers
-	}
-	return NewManagerWithConfig(cfg)
+	return NewManagerWithICEServers(stunServers, nil, "all", 10000)
 }
 
-// NewManagerWithConfig creates a new RTC Manager with full production-ready configuration.
-func NewManagerWithConfig(cfg core.Config) *Manager {
-	stunServers := cfg.STUNServers
+// NewManagerWithICEServers creates a new RTC Manager with configurable STUN/TURN servers and TCP-Mux.
+func NewManagerWithICEServers(stunServers []string, turnServers []core.ICEServerConfig, transportPolicy string, tcpMuxPort int) *Manager {
 	if len(stunServers) == 0 {
 		stunServers = []string{
-			"stun:stun.cloudflare.com:3478",
 			"stun:stun.l.google.com:19302",
 			"stun:stun1.l.google.com:19302",
 		}
+	}
+
+	iceServers := []webrtc.ICEServer{{URLs: stunServers}}
+	for _, turn := range turnServers {
+		iceServers = append(iceServers, webrtc.ICEServer{
+			URLs:           turn.URLs,
+			Username:       turn.Username,
+			Credential:     turn.Credential,
+			CredentialType: parseCredentialType(turn.CredentialType),
+		})
+	}
+
+	conf := webrtc.Configuration{ICEServers: iceServers}
+	if transportPolicy == "relay" {
+		conf.ICETransportPolicy = webrtc.ICETransportPolicyRelay
 	}
 
 	// Create media engine with proper codec registration
@@ -389,56 +396,14 @@ func NewManagerWithConfig(cfg core.Config) *Manager {
 	// Create setting engine with optimizations
 	s := webrtc.SettingEngine{}
 	s.SetSRTPReplayProtectionWindow(512)
-	s.SetICETimeouts(10*time.Second, 30*time.Second, 2*time.Second)
+	s.SetICETimeouts(5*time.Second, 10*time.Second, 2*time.Second)
 	s.SetDTLSRetransmissionInterval(100 * time.Millisecond)
-	s.DisableActiveTCP(true) // Standard for cloud/tunnel stability
 
-	// Configure Port Range (Essential for firewalls)
-	if cfg.WebRTCPortRangeLow != 0 && cfg.WebRTCPortRangeHigh != 0 {
-		if err := s.SetEphemeralUDPPortRange(cfg.WebRTCPortRangeLow, cfg.WebRTCPortRangeHigh); err != nil {
-			log.Printf("RTC: Failed to set UDP port range: %v", err)
-		}
-	}
-
-	// NAT 1:1 Mapping for global cloud delivery
-	if len(cfg.ExternalIPs) > 0 {
-		var validIPs []string
-		for _, ip := range cfg.ExternalIPs {
-			if net.ParseIP(ip) != nil {
-				validIPs = append(validIPs, ip)
-			}
-		}
-		if len(validIPs) > 0 {
-			log.Printf("RTC: Configuring NAT 1:1 IPs: %v", validIPs)
-			s.SetNAT1To1IPs(validIPs, webrtc.ICECandidateTypeHost)
-		}
-	}
-
-	// Network Restriction (Force TCP for tunnels/highly restrictive firewalls)
-	if cfg.WebRTCForceTCP {
-		log.Printf("RTC: WebRTC Network restricted to TCP-ONLY (Tunnel/Firewall Mode)")
-		s.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeTCP4})
-	} else {
-		log.Printf("RTC: WebRTC standard UDP+TCP networking enabled")
-		s.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeTCP4})
-	}
-
-	// Enable UDP-Mux (Single-port UDP discovery - Pion v4 style)
-	if cfg.WebRTCUDPPort > 0 {
-		mux, err := ice.NewMultiUDPMuxFromPort(cfg.WebRTCUDPPort)
+	// Enable TCP-Mux for NAT traversal via tunnels
+	if tcpMuxPort > 0 {
+		tcpListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4zero, Port: tcpMuxPort})
 		if err != nil {
-			log.Printf("RTC: Failed to start UDP-Mux on port %d: %v", cfg.WebRTCUDPPort, err)
-		} else {
-			log.Printf("RTC: WebRTC UDP-Mux listening on port %d", cfg.WebRTCUDPPort)
-			s.SetICEUDPMux(mux)
-		}
-	}
-
-	// Enable TCP-Mux (NAT traversal via tunnels/80/443 mapping)
-	if cfg.WebRTCTCPPort > 0 {
-		tcpListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4zero, Port: cfg.WebRTCTCPPort})
-		if err != nil {
-			log.Printf("RTC: Failed to start TCP-Mux on port %d: %v", cfg.WebRTCTCPPort, err)
+			log.Printf("RTC: Failed to start TCP-Mux on port %d: %v", tcpMuxPort, err)
 		} else {
 			log.Printf("RTC: WebRTC TCP-Mux listening on %s", tcpListener.Addr())
 			tcpMux := ice.NewTCPMuxDefault(ice.TCPMuxParams{
@@ -447,26 +412,13 @@ func NewManagerWithConfig(cfg core.Config) *Manager {
 				ReadBufferSize: 20,
 			})
 			s.SetICETCPMux(tcpMux)
+			
+			// Allow both UDP and TCP network types
+			s.SetNetworkTypes([]webrtc.NetworkType{
+				webrtc.NetworkTypeUDP4,
+				webrtc.NetworkTypeTCP4,
+			})
 		}
-	}
-
-	// Generate standard ICE Configuration
-	iceServers := []webrtc.ICEServer{}
-	for _, srv := range stunServers {
-		iceServers = append(iceServers, webrtc.ICEServer{URLs: []string{srv}})
-	}
-	for _, t := range cfg.TURNServers {
-		iceServers = append(iceServers, webrtc.ICEServer{
-			URLs:           t.URLs,
-			Username:       t.Username,
-			Credential:     t.Credential,
-			CredentialType: webrtc.ICECredentialTypePassword,
-		})
-	}
-
-	conf := webrtc.Configuration{
-		ICEServers:         iceServers,
-		ICETransportPolicy: webrtc.NewICETransportPolicy(cfg.ICETransportPolicy),
 	}
 
 	// Create API
@@ -482,7 +434,6 @@ func NewManagerWithConfig(cfg core.Config) *Manager {
 		routers: make(map[string]*Router),
 		api:     api,
 		conf:    conf,
-		externalIPs: cfg.ExternalIPs,
 	}
 
 	// Initialize Phase 2: Adaptive Media Optimization
@@ -493,6 +444,15 @@ func NewManagerWithConfig(cfg core.Config) *Manager {
 	})
 
 	return rtc
+}
+
+// NewManagerWithConfig creates a Manager with custom WebRTC configuration.
+func NewManagerWithConfig(conf webrtc.Configuration) *Manager {
+	return &Manager{
+		peers:   make(map[string]*Peer),
+		routers: make(map[string]*Router),
+		conf:    conf,
+	}
 }
 
 // GetRouter returns or creates the router for the given room.

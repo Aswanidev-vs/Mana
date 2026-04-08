@@ -112,7 +112,7 @@ func New(cfg core.Config) *App {
 		config:       cfg,
 		roomManager:  room.NewManager(),
 		signalHub:    hub,
-		rtcManager:   rtc.NewManagerWithConfig(cfg),
+		rtcManager:   rtc.NewManagerWithICEServers(cfg.STUNServers, cfg.TURNServers, cfg.ICETransportPolicy, cfg.WebRTCTCPPort),
 		callManager:  rtc.NewCallManager(),
 		mux:          http.NewServeMux(),
 		logger:       logger,
