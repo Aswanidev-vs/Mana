@@ -913,23 +913,38 @@ func main() {
 
 	// 5. Static Files & Frontend SPA Routing
 	frontendPath := "../frontend"
+	frontendAbs, err := filepath.Abs(frontendPath)
+	if err != nil {
+		log.Fatalf("failed to resolve frontend path: %v", err)
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		if path == "/" {
 			path = "/index.html"
 		}
 
-		fullPath := filepath.Join(frontendPath, path)
 		if strings.HasPrefix(path, "/api/") || path == "/ws" || path == "/health" {
 			return // Let other handlers handle these
 		}
 
-		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-			// SPA fallback
-			http.ServeFile(w, r, filepath.Join(frontendPath, "index.html"))
+		relPath := strings.TrimPrefix(path, "/")
+		fullPath := filepath.Join(frontendAbs, relPath)
+		fullPathAbs, err := filepath.Abs(fullPath)
+		if err != nil {
+			http.Error(w, "Invalid path", http.StatusBadRequest)
 			return
 		}
-		http.ServeFile(w, r, fullPath)
+		if fullPathAbs != frontendAbs && !strings.HasPrefix(fullPathAbs, frontendAbs+string(os.PathSeparator)) {
+			http.Error(w, "Invalid path", http.StatusBadRequest)
+			return
+		}
+
+		if _, err := os.Stat(fullPathAbs); os.IsNotExist(err) {
+			// SPA fallback
+			http.ServeFile(w, r, filepath.Join(frontendAbs, "index.html"))
+			return
+		}
+		http.ServeFile(w, r, fullPathAbs)
 	})
 
 	// 6. E2EE Public Key Exchange API
