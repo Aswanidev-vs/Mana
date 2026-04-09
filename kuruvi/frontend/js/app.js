@@ -1027,7 +1027,7 @@ const App = {
         if (!sdp) return sdp;
         // Rewrite any IP address on port 10000 to our tunnel hostname
         let tunnelHost = window.location.hostname;
-        if (tunnelHost.includes('.app.online.visualstudio.com')) {
+        if (tunnelHost === 'app.online.visualstudio.com' || tunnelHost.endsWith('.app.online.visualstudio.com')) {
             tunnelHost = tunnelHost.replace(/-8080\./, '-10000.').replace(/-(\d+)\./, (m, p) => p === '10000' ? m : '-10000.');
         }
         
@@ -1040,7 +1040,7 @@ const App = {
     rewriteICECandidate(c) {
         if (!c || !c.includes('10000')) return c;
         let tunnelHost = window.location.hostname;
-        if (tunnelHost.includes('.app.online.visualstudio.com')) {
+        if (tunnelHost === 'app.online.visualstudio.com' || tunnelHost.endsWith('.app.online.visualstudio.com')) {
             tunnelHost = tunnelHost.replace(/-8080\./, '-10000.').replace(/-(\d+)\./, (m, p) => p === '10000' ? m : '-10000.');
         }
         const newCandidate = c.replace(/(\d+\.\d+\.\d+\.\d+|localhost|0\.0\.0\.0|\[::1\]|\[::\])/g, tunnelHost);
