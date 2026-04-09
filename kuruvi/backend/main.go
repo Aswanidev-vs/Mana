@@ -927,7 +927,13 @@ func main() {
 			return // Let other handlers handle these
 		}
 
-		relPath := strings.TrimPrefix(path, "/")
+		cleanPath := filepath.Clean(path)
+		relPath := strings.TrimPrefix(cleanPath, "/")
+		if relPath == "" || relPath == ".." || strings.HasPrefix(relPath, ".."+string(os.PathSeparator)) || strings.Contains(relPath, string(os.PathSeparator)+"..") || strings.Contains(relPath, "\\") {
+			http.Error(w, "Invalid path", http.StatusBadRequest)
+			return
+		}
+
 		fullPath := filepath.Join(frontendAbs, relPath)
 		fullPathAbs, err := filepath.Abs(fullPath)
 		if err != nil {
