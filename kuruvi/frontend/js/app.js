@@ -775,11 +775,11 @@ const App = {
                 mediaUrl = hostBase + mediaUrl;
             }
 
-            const fileName = text.split('/').pop();
+            const fileName = text.split('/').pop() || 'download';
             const ext = fileName.split('.').pop().toLowerCase();
-            const downloadAttr = `download="${fileName}"`;
+            const safeDownloadName = this.escapeHTML(fileName);
             
-            const downloadBtn = `<a href="${this.escapeHTML(mediaUrl)}" ${downloadAttr} class="download-mini-btn" title="Download"><i data-lucide="download" style="width:14px;"></i></a>`;
+            const downloadBtn = `<a href="${this.escapeHTML(mediaUrl)}" download="${safeDownloadName}" class="download-mini-btn" title="Download"><i data-lucide="download" style="width:14px;"></i></a>`;
 
             if (['jpg','jpeg','png','gif','webp'].includes(ext)) {
                 contentHtml = `
@@ -805,7 +805,7 @@ const App = {
                         <a href="${this.escapeHTML(mediaUrl)}" target="_blank" class="attachment-link" style="display:flex; align-items:center; gap:8px; color:var(--accent-cyan); background:rgba(255,255,255,0.05); padding:10px; border-radius:8px; border:1px solid var(--border); flex:1;">
                             <i data-lucide="file-text"></i><span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:200px;">${this.escapeHTML(fileName)}</span>
                         </a>
-                        <a href="${this.escapeHTML(mediaUrl)}" ${downloadAttr} class="btn-icon" style="background:var(--bg-surface); padding:8px;"><i data-lucide="download"></i></a>
+                        <a href="${this.escapeHTML(mediaUrl)}" download="${safeDownloadName}" class="btn-icon" style="background:var(--bg-surface); padding:8px;"><i data-lucide="download"></i></a>
                     </div>`;
             }
         }
