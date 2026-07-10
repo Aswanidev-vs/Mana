@@ -6,7 +6,7 @@ require (
 	github.com/Aswanidev-vs/mana v0.1.0
 	github.com/joho/godotenv v1.5.1
 	github.com/wneessen/go-mail v0.7.2
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.52.0
 	modernc.org/sqlite v1.48.1
 )
 
